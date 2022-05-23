@@ -1,0 +1,127 @@
+package backend
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"github.com/pkg/errors"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+)
+
+type ModuleProxy struct{}
+
+func (b ModuleProxy) GetList(path, major string) ([]string, error) {
+	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/list", path+major)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to query module proxy")
+	} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return nil, ErrNotFound
+	} else if resp.StatusCode != http.StatusOK {
+		return nil, errors.Wrap(err, "unexpected error from the module proxy")
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read body of response")
+	}
+
+	data = bytes.TrimSpace(data)
+	versions := strings.Split(string(data), "\n")
+	sort.Strings(versions)
+	return versions, nil
+}
+
+func (b ModuleProxy) GetLatest(path, major string) (string, time.Time, error) {
+	url := fmt.Sprintf("https://proxy.golang.org/%s/@latest", path+major)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", time.Unix(0, 0), errors.Wrap(err, "failed to query module proxy")
+	} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return "", time.Unix(0, 0), ErrNotFound
+	} else if resp.StatusCode != http.StatusOK {
+		return "", time.Unix(0, 0), errors.Wrap(err, "unexpected error from the module proxy")
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Version string
+		Time    time.Time
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", time.Unix(0, 0), errors.Wrap(err, "failed to json decode result")
+	}
+
+	return data.Version, data.Time, nil
+}
+
+func (b ModuleProxy) GetModule(path, version string) (string, error) {
+
+	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.mod", path, version)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to query module proxy")
+	} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return "", ErrNotFound
+	} else if resp.StatusCode != http.StatusOK {
+		return "", errors.Wrap(err, "unexpected error from the module proxy")
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to read body of response")
+	}
+
+	data = bytes.TrimSpace(data)
+	return string(data), nil
+}
+
+func (b ModuleProxy) GetInfo(path, version string) (string, time.Time, error) {
+	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.info", path, version)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", time.Unix(0, 0), errors.Wrap(err, "failed to query module proxy")
+	} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return "", time.Unix(0, 0), ErrNotFound
+	} else if resp.StatusCode != http.StatusOK {
+		return "", time.Unix(0, 0), errors.Wrap(err, "unexpected error from the module proxy")
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Version string
+		Time    time.Time
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", time.Unix(0, 0), errors.Wrap(err, "failed to json decode result")
+	}
+
+	return data.Version, data.Time, nil
+}
+
+func (b ModuleProxy) GetArchive(path, version string) (io.Reader, error) {
+	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.zip", path, version)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to query module proxy")
+	} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return nil, ErrNotFound
+	} else if resp.StatusCode != http.StatusOK {
+		return nil, errors.Wrap(err, "unexpected error from the module proxy")
+	}
+	defer resp.Body.Close()
+
+	var archive bytes.Buffer
+	if _, err := io.Copy(&archive, resp.Body); err != nil {
+		return nil, errors.Wrap(err, "failed to buffer archive in memory")
+	}
+
+	return &archive, nil
+}

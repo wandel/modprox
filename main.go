@@ -2,13 +2,15 @@ package main
 
 import (
 	"archive/zip"
-	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli"
-	"github.com/xanzy/go-gitlab"
+	"github.com/wandel/modprox/backend"
 	module "golang.org/x/mod/module"
 	"io"
 	"log"
@@ -18,7 +20,7 @@ import (
 	"time"
 )
 
-const GITLAB_TOKEN = ""
+var source backend.Backend
 
 func main() {
 	app := cli.NewApp()
@@ -28,10 +30,19 @@ func main() {
 		&cli.StringFlag{Name: "username", Value: "git", Usage: "the username to use"},
 		&cli.StringFlag{Name: "password", Value: "", Usage: "the password to use"},
 		&cli.StringFlag{Name: "privatekey", Value: "", Usage: "the ssh private key to use"},
+		cli.StringFlag{Name: "token", Value: "", Usage: "gitlab personal access token"},
 	}
+
+	app.Before = func(ctx *cli.Context) error {
+		token := ctx.GlobalString("token")
+		gitlab := backend.NewGitLab(token)
+		source = backend.NewMultiBackend(gitlab)
+		return nil
+	}
+
 	app.Commands = []cli.Command{
 		cli.Command{Name: "serve", Action: ServeAction},
-		cli.Command{Name: "test", Action: TestAction},
+		//cli.Command{Name: "test", Action: TestAction},
 		//cli.Command{Name: "sync", Action: SyncAction, Flags: []cli.Flag{
 		//	&cli.StringFlag{Name: "source, s", Usage: "the source repository to sync from"},
 		//	&cli.StringFlag{Name: "destination, d", Usage: "the destination repository to sync to"},
@@ -43,56 +54,18 @@ func main() {
 	}
 }
 
-func ServeAction(ctx *cli.Context) error {
-	router := mux.NewRouter()
-	router.HandleFunc("/{module:.+}/@v/list", ListHandler)
-	router.HandleFunc("/{module:.+}/@latest", LatestHandler)
-	router.HandleFunc("/{module:.+}/@v/{version}.mod", ModHandler)
-	router.HandleFunc("/{module:.+}/@v/{version}.info", InfoHandler)
-	router.HandleFunc("/{module:.+}/@v/{version}.zip", ArchiveHandler)
-	http.Handle("/", router)
-
-	if err := http.ListenAndServe("127.0.0.1:8000", nil); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func TestAction(ctx *cli.Context) error {
-	sha := "f79a8a8ca69d"
-	client, err := gitlab.NewClient(GITLAB_TOKEN)
-	if err != nil {
-		return errors.Wrap(err, "failed to connect to github")
-	}
-
-	if _, resp, err := client.Repositories.Archive("mirror8/github.com/cpuguy83/go-md2man", &gitlab.ArchiveOptions{
-		Format: gitlab.String("zip"),
-		SHA:    gitlab.String(sha),
-	}, nil); err != nil {
-		return errors.Wrap(err, "failed to fetch archive")
-	} else {
-		log.Println(resp.StatusCode, '-', resp.Status)
-	}
-
-	return nil
-}
-
-//
 //func getAuth(ctx *cli.Context) (transport.AuthMethod, error) {
 //	username := ctx.GlobalString("username")
 //	password := ctx.GlobalString("password")
 //	privatekey := ctx.GlobalString("privatekey")
 //
 //	if "privatekey" != "" {
-//		log.Println(privatekey, username, password)
 //		auth, err := ssh.NewPublicKeysFromFile(username, privatekey, password)
 //		if err != nil {
 //			return nil, errors.Wrapf(err, "failed to load ssh key from '%s'", privatekey)
 //		}
 //		return auth, nil
 //	} else if password != "" {
-//		log.Println(username, password)
 //		return &http2.BasicAuth{Username: username, Password: password}, nil
 //	}
 //
@@ -133,7 +106,7 @@ func TestAction(ctx *cli.Context) error {
 //
 //	return false
 //}
-
+//
 //func SyncAction(ctx *cli.Context) error {
 //	srcUrl := ctx.String("source")
 //	dstUrl := ctx.String("destination")
@@ -228,6 +201,7 @@ func MapPath(path string) string {
 	}
 
 	if strings.HasPrefix(path, "gopkg.in/") {
+		// we can use SplitPathVersion, as it has support for gopkg.in built in
 		path = strings.TrimPrefix(path, "gopkg.in/")
 		version := ""
 		if parts := strings.Split(path, "."); len(parts) == 2 {
@@ -267,35 +241,17 @@ func ListHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, version, _ := module.SplitPathVersion(path)
-	log.Printf("list: path='%s', name='%s', version='%s'\n", path, name, version)
-
-	client, err := gitlab.NewClient(GITLAB_TOKEN)
-	if err != nil {
-		http.Error(w, errors.Wrap(err, "failed to connect to gitlab").Error(), http.StatusInternalServerError)
-	}
-
-	// sync repository
-	// TODO trigger and wait for a sync
-
-	// fetch a list of tags
-	tags, _, err := client.Tags.ListTags("mirror8/"+name, &gitlab.ListTagsOptions{
-		ListOptions: gitlab.ListOptions{
-			PerPage: 1000, // TODO should do this properly in the future
-
-		},
-	}, nil)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "failed to get a list of tags: %s", err)
-		return
-	}
-
-	// filter tag based on version
-	for _, tag := range tags {
-		// go helpfully provides a simple function to validate a path and version (tag) combination.
-		if err := module.Check(path, tag.Name); err == nil {
-			fmt.Fprintln(w, tag.Name)
+	name, major, _ := module.SplitPathVersion(path)
+	log.Printf("list: path='%s', name='%s', major='%s'\n", path, name, major)
+	if versions, err := source.GetList(name, major); err != nil {
+		if errors.Is(err, backend.ErrNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	} else {
+		for _, version := range versions {
+			fmt.Fprintln(w, version)
 		}
 	}
 }
@@ -314,55 +270,18 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, version, _ := module.SplitPathVersion(path)
-	log.Printf("list: path='%s', name='%s', version='%s'\n", path, name, version)
+	name, major, _ := module.SplitPathVersion(path)
+	log.Printf("list: path='%s', name='%s', major='%s'\n", path, name, major)
 
-	client, err := gitlab.NewClient(GITLAB_TOKEN)
+	latest, timestamp, err := source.GetLatest(name, major)
 	if err != nil {
-		http.Error(w, errors.Wrap(err, "failed to connect to gitlab").Error(), http.StatusInternalServerError)
-	}
-
-	// sync repository
-	// TODO trigger and wait for a sync
-
-	// fetch a list of tags
-	tags, _, err := client.Tags.ListTags("mirror8/"+name, &gitlab.ListTagsOptions{
-		ListOptions: gitlab.ListOptions{
-			PerPage: 1000, // TODO should do this properly in the future
-
-		},
-	}, nil)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "failed to get a list of tags: %s", err)
-		return
-	}
-
-	// filter tag based on version
-	var latest *gitlab.Tag
-	for _, tag := range tags {
-		// go helpfully provides a simple function to validate a path and version (tag) combination.
-		if err := module.Check(path, tag.Name); err != nil {
-			continue
+		if errors.Is(err, backend.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
-
-		if tag.Commit == nil || tag.Commit.CommittedDate == nil {
-			continue
-		}
-
-		if latest == nil {
-			latest = tag
-			continue
-		}
-
-		if latest.Commit.CommittedDate.Before(*tag.Commit.CommittedDate) {
-			latest = tag
-		}
-	}
-
-	if latest == nil {
-		http.Error(w, "failed to find a valid version", http.StatusNotFound)
-		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -371,10 +290,9 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 		Version string
 		Time    string
 	}{
-		Version: latest.Name,
-		Time:    latest.Commit.CommittedDate.UTC().Format(time.RFC3339),
+		Version: latest,
+		Time:    timestamp.UTC().Format(time.RFC3339),
 	})
-
 }
 
 func ModHandler(w http.ResponseWriter, r *http.Request) {
@@ -397,38 +315,20 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	commit := version
-	if module.IsPseudoVersion(version) {
-		if tmp, err := module.PseudoVersionRev(version); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	mod, err := source.GetModule(path, version)
+	if err != nil {
+		if errors.Is(err, backend.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
-			log.Println("commit:", tmp)
-			commit = tmp
-		}
-	}
-
-	name, _, _ := module.SplitPathVersion(path)
-	log.Printf("mod: path='%s', name='%s', version='%s', commit='%s'\n", path, name, version, commit)
-
-	client, err := gitlab.NewClient(GITLAB_TOKEN)
-	if err != nil {
-		http.Error(w, errors.Wrap(err, "failed to connect to gitlab").Error(), http.StatusInternalServerError)
-	}
-
-	if content, resp, err := client.RepositoryFiles.GetRawFile("mirror8/"+name, "go.mod", &gitlab.GetRawFileOptions{
-		Ref: gitlab.String(commit),
-	}); err != nil {
-		_, major, _ := module.SplitPathVersion(path)
-		if resp.StatusCode == http.StatusNotFound && major == "" {
-			// generate a synthetic go.mod file if one does not exist (only appropriate for v0/v1)
-			fmt.Fprintln(w, "module", path)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Error(w, err.Error(), resp.StatusCode)
-	} else if _, err := w.Write(content); err != nil {
-		// nothing we can do now except for logging it
-		log.Println("failed to write module content:", err)
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+	if _, err := io.WriteString(w, mod); err != nil {
+		log.Println("failed to write module to response:", err)
 	}
 }
 
@@ -452,17 +352,15 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, _, _ := module.SplitPathVersion(path)
-	log.Printf("info: path='%s', name='%s', version='%s'\n", path, name, version)
-
-	client, err := gitlab.NewClient(GITLAB_TOKEN)
+	content, timestamp, err := source.GetInfo(path, version)
 	if err != nil {
-		http.Error(w, errors.Wrap(err, "failed to connect to gitlab").Error(), http.StatusInternalServerError)
-	}
-
-	tag, resp, err := client.Tags.GetTag("mirror8/"+name, version, nil)
-	if err != nil {
-		http.Error(w, err.Error(), resp.StatusCode)
+		if errors.Is(err, backend.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -471,8 +369,8 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		Version string
 		Time    string
 	}{
-		Version: tag.Name,
-		Time:    tag.Commit.CommittedDate.UTC().Format(time.RFC3339),
+		Version: content,
+		Time:    timestamp.UTC().Format(time.RFC3339),
 	}
 
 	if err := json.NewEncoder(w).Encode(data); err != nil {
@@ -501,99 +399,158 @@ func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	commit := version
-	if module.IsPseudoVersion(version) {
-		if tmp, err := module.PseudoVersionRev(version); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	tmp, err := source.GetArchive(path, version)
+	if err != nil {
+		if errors.Is(err, backend.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
-			commit = tmp
-		}
-	}
-
-	name, _, _ := module.SplitPathVersion(path)
-	log.Printf("archive: path='%s', name='%s', version='%s', commit='%s'\n", path, name, version, commit)
-
-	client, err := gitlab.NewClient(GITLAB_TOKEN)
-	if err != nil {
-		http.Error(w, errors.Wrap(err, "failed to connect to gitlab").Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var buffer bytes.Buffer
-	if resp, err := client.Repositories.StreamArchive("mirror8/"+name, &buffer, &gitlab.ArchiveOptions{
-		Format: gitlab.String("zip"),
-		SHA:    gitlab.String(commit),
-	}, nil); err != nil {
-		http.Error(w, err.Error(), resp.StatusCode)
-		return
-	}
-
-	reader := bytes.NewReader(buffer.Bytes())
-	input, err := zip.NewReader(reader, reader.Size())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	path, err = module.EscapePath(path)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	version, err = module.EscapeVersion(version)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	base := path + "@" + version + "/"
-	log.Println(base)
-
-	// we buffer the new zip file in memory so we can return useful http error codes/messages.
-	// if we did zip.NewWriter(w) then as soon as the zip writer flushed data, the http server would
-	// automatically send a http.StatusOK, preventing us from returning any context of the error.
-	var buffer1 bytes.Buffer
-	output := zip.NewWriter(&buffer1)
-	var replace string
-	for _, file := range input.File {
-		if replace == "" {
-			replace = file.Name
-		}
-
-		if strings.Contains(file.Name, "vendor") {
-			if !strings.HasSuffix(file.Name, "modules.txt") {
-				// we leave out any vendored file other than modules.txt
-				continue
-			}
-		}
-
-		// need to replace the base folder name with the correct module path (ie "github.com/urfave/cli/v2@v2.6.0")
-		tmp := strings.Replace(file.Name, replace, base, 1)
-		dst, err := output.Create(tmp)
-		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		src, err := file.Open()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if _, err := io.Copy(dst, src); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			src.Close()
-			return
-		}
-		src.Close()
 	}
 
-	output.Close()
-	if _, err := io.Copy(w, &buffer1); err != nil {
-		// not much else we can do
-		log.Println("failed to copy final zip:", err)
+	w.Header().Set("content-type", "application/zip")
+	if _, err := io.Copy(w, tmp); err != nil {
+		log.Println("failed to write zip archive to response:", err)
 	}
+
 }
+
+func ServeAction(ctx *cli.Context) error {
+	router := mux.NewRouter()
+	router.HandleFunc("/{module:.+}/@v/list", ListHandler)
+	router.HandleFunc("/{module:.+}/@latest", LatestHandler)
+	router.HandleFunc("/{module:.+}/@v/{version}.mod", ModHandler)
+	router.HandleFunc("/{module:.+}/@v/{version}.info", InfoHandler)
+	router.HandleFunc("/{module:.+}/@v/{version}.zip", ArchiveHandler)
+	http.Handle("/", router)
+
+	if err := http.ListenAndServe("127.0.0.1:8000", nil); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func BuildArchive(url, tag string, w io.Writer) error {
+
+	return nil
+}
+
+// WriteZip will stream the content of the repository to w as a zip file.
+// revision can be anything supported by ResolveRevision(), but please
+// note that short hashes are not supported for repositories opened using
+// PlainOpen(). See: https://github.com/go-git/go-git/issues/148
+func WriteZip(repo *git.Repository, w io.Writer, revision string) error {
+	hash, err := repo.ResolveRevision(plumbing.Revision(revision))
+	if err != nil {
+		return err
+	}
+
+	// Get the corresponding commit hash.
+	obj, err := repo.CommitObject(*hash)
+	if err != nil {
+		return err
+	}
+
+	// Let's have a look at the tree at that commit.
+	tree, err := repo.TreeObject(obj.TreeHash)
+	if err != nil {
+		return err
+	}
+
+	z := zip.NewWriter(w)
+
+	addFile := func(f *object.File) error {
+		log.Println("added:", f.Name)
+		fw, err := z.Create(f.Name)
+		if err != nil {
+			return err
+		}
+
+		fr, err := f.Reader()
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(fw, fr)
+		if err != nil {
+			return err
+		}
+
+		return fr.Close()
+	}
+
+	err = tree.Files().ForEach(addFile)
+	if err != nil {
+		return err
+	}
+
+	return z.Close()
+}
+
+//func NewRemote(url string) *git.Remote {
+//	return git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
+//		URLs: []string{url},
+//	})
+//}
+//
+//func StartAction(ctx *cli.Context) error {
+//	//url := "https://github.com/llvm/llvm-project/llvm"
+//	//tag := "llvmorg-14.0.3"
+//
+//	//_, filename := path.Split(url)
+//	//filename = fmt.Sprintf("%s@%s.zip", filename, tag)
+//	//f, err := os.Create(filename)
+//	//if err != nil {
+//	//	return errors.Wrapf(err, "failed to create file %s", filename)
+//	//}
+//	//defer f.Close()
+//	//
+//	//if err := BuildArchive(url, tag, f); err != nil {
+//	//	os.Remove(filename)
+//	//	return errors.Wrap(err, "failed to build archive")
+//	//}
+//
+//	//tag = "llvmorg"
+//	//tags, err := ListTags(url, tag)
+//	//if err != nil {
+//	//	return errors.Wrap(err, "failed to list versions")
+//	//}
+//	//
+//	//for i, tag := range tags {
+//	//	log.Println(i, tag)
+//	//}
+//
+//	//
+//	//log.Println("Cloning base repository")
+//	//repo, err := git.Clone(memory.NewStorage(), nil, &git.CloneOptions{
+//	//	URL:      "git@github.com:wandel/pdbgen.git",
+//	//	Auth:     key,
+//	//	Progress: os.Stdout,
+//	//})
+//	//if err != nil {
+//	//	return errors.Wrap(err, "failed to clone repository")
+//	//}
+//
+//	//log.Println("creating remote")
+//	//remote, err := repo.CreateRemote(&config.RemoteConfig{
+//	//	Name: "backup",
+//	//	URLs: []string{"git@gitlab.com:bwandel/pdbgen.git"},
+//	//})
+//	//if err != nil {
+//	//	return errors.Wrap(err, "failed to create remote")
+//	//}
+//	//
+//	//log.Println("pushing to backup")
+//	//if err := remote.Push(&git.PushOptions{
+//	//	RemoteName: "backup",
+//	//	Auth:       key,
+//	//	Progress:   os.Stdout,
+//	//}); err != nil {
+//	//	return errors.Wrap(err, "failed to push to remote")
+//	//}
+//
+//	return nil
+//}
