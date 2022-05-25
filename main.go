@@ -11,7 +11,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/urfave/cli"
 	"github.com/wandel/modprox/backend"
-	module "golang.org/x/mod/module"
+	"golang.org/x/mod/module"
 	"io"
 	"log"
 	"net/http"
@@ -35,18 +35,29 @@ func main() {
 
 	app.Before = func(ctx *cli.Context) error {
 		token := ctx.GlobalString("token")
-		gitlab := backend.NewGitLab(token)
+		gitlab, err := backend.NewGitLab(token, "mirror8")
+		if err != nil {
+			return errors.Wrap(err, "failed to create gitlab backend")
+		}
+
 		source = backend.NewMultiBackend(gitlab)
 		return nil
 	}
 
-	app.Commands = []cli.Command{
-		cli.Command{Name: "serve", Action: ServeAction},
-		//cli.Command{Name: "test", Action: TestAction},
-		//cli.Command{Name: "sync", Action: SyncAction, Flags: []cli.Flag{
-		//	&cli.StringFlag{Name: "source, s", Usage: "the source repository to sync from"},
-		//	&cli.StringFlag{Name: "destination, d", Usage: "the destination repository to sync to"},
-		//}},
+	app.Action = func(ctx *cli.Context) error {
+		router := mux.NewRouter()
+		router.HandleFunc("/{module:.+}/@v/list", ListHandler)
+		router.HandleFunc("/{module:.+}/@latest", LatestHandler)
+		router.HandleFunc("/{module:.+}/@v/{version}.mod", ModHandler)
+		router.HandleFunc("/{module:.+}/@v/{version}.info", InfoHandler)
+		router.HandleFunc("/{module:.+}/@v/{version}.zip", ArchiveHandler)
+
+		log.Println("listening on 127.0.0.1:8000")
+		if err := http.ListenAndServe("127.0.0.1:8000", router); err != nil {
+			return err
+		}
+
+		return nil
 	}
 
 	if err := app.Run(os.Args); err != nil {
@@ -187,63 +198,68 @@ func main() {
 //	return nil
 //}
 
-func MapPath(path string) string {
+func MapPath(path string) (string, string, error) {
 	// not sure if this is required...
 	mappings := map[string]string{
 		"google.golang.org/grpc":         "github.com/grpc/grpc-go",
 		"google.golang.org/protobuf":     "github.com/protocolbuffers/protobuf-go",
 		"google.golang.org/api":          "github.com/googleapis/google-api-go-client",
 		"google.golang.org/genproto":     "github.com/googleapis/go-genproto",
-		"cloud.google.com/go":            "github.com/googleapis/google-cloud-go",
 		"go.opentelemetry.io/proto/otlp": "github.com/open-telemetry/opentelemetry-proto-go",
 		"google.golang.org/appengine":    "github.com/golang/appengine",
 		"honnef.co/go/tools":             "github.com/dominikh/go-tools",
 	}
 
-	if strings.HasPrefix(path, "gopkg.in/") {
-		// we can use SplitPathVersion, as it has support for gopkg.in built in
-		path = strings.TrimPrefix(path, "gopkg.in/")
-		version := ""
-		if parts := strings.Split(path, "."); len(parts) == 2 {
-			path = parts[0]
-			version = "/" + parts[1]
-		}
-
-		if parts := strings.Split(path, "/"); len(parts) == 1 {
-			path = "go-" + parts[0] + "/" + parts[0]
-		}
-
-		return "github.com/" + path + version
-	} else if strings.HasPrefix(path, "golang.org/x") {
-		return strings.Replace(path, "golang.org/x", "github.com/golang", 1)
+	if err := module.CheckPath(path); err != nil {
+		return "", "", errors.Wrap(err, "invalid path")
 	}
 
-	path, version, _ := module.SplitPathVersion(path)
-	if value, ok := mappings[path]; ok {
+	path, major, _ := module.SplitPathVersion(path)
+	path = strings.TrimPrefix(path, "/")
+	major = strings.TrimPrefix(major, ".")
+	major = strings.TrimPrefix(major, "/")
+
+	if strings.HasPrefix(path, "gopkg.in/") {
+		switch parts := strings.Split(path, "/"); len(parts) {
+		case 2:
+			path = parts[0] + "/" + "go-" + parts[1] + "/" + parts[1]
+		case 3:
+			break
+		default:
+			return "", "", errors.Errorf("invalid gopkg.in path '%s': unexpected number of '/'", path)
+		}
+		path = strings.Replace(path, "gopkg.in/", "github.com/", 1)
+	} else if strings.HasPrefix(path, "golang.org/x") {
+		path = strings.Replace(path, "golang.org/x", "github.com/golang", 1)
+	} else if strings.HasPrefix(path, "cloud.google.com/go") {
+		path = strings.Replace(path, "cloud.google.com/go", "github.com/googleapis/google-cloud-go", 1)
+	} else if value, ok := mappings[path]; ok {
 		path = value
 	}
 
-	return path + version
+	if major == "v1" {
+		major = ""
+	}
+
+	return path, major, nil
 }
 
 // ListHandler provides a list of valid versions (git tags) for a module
 func ListHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("===", r.URL, "===")
-	path, err := module.UnescapePath(mux.Vars(r)["module"])
+	unmapped := mux.Vars(r)["module"]
+	mapped, major, err := MapPath(unmapped)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	path, err := module.UnescapePath(mapped)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// use go's internal tooling to split the path into module and version
-	if err := module.CheckPath(path); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	name, major, _ := module.SplitPathVersion(path)
-	log.Printf("list: path='%s', name='%s', major='%s'\n", path, name, major)
-	if versions, err := source.GetList(name, major); err != nil {
+	if versions, err := source.GetList(path, major); err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 		} else {
@@ -258,22 +274,19 @@ func ListHandler(w http.ResponseWriter, r *http.Request) {
 
 func LatestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("===", r.URL, "===")
-	path, err := module.UnescapePath(mux.Vars(r)["module"])
+	unmapped := mux.Vars(r)["module"]
+	mapped, major, err := MapPath(unmapped)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	path, err := module.UnescapePath(mapped)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// use go's internal tooling to split the path into module and version
-	if err := module.CheckPath(path); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	name, major, _ := module.SplitPathVersion(path)
-	log.Printf("list: path='%s', name='%s', major='%s'\n", path, name, major)
-
-	latest, timestamp, err := source.GetLatest(name, major)
+	latest, timestamp, err := source.GetLatest(path, major)
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -297,10 +310,19 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 
 func ModHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("===", r.URL, "===")
-	path, err := module.UnescapePath(mux.Vars(r)["module"])
+	unmapped, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	mapped, major, err := MapPath(unmapped)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if major != "" {
+		mapped = mapped + "/" + major
 	}
 
 	version, err := module.UnescapeVersion(mux.Vars(r)["version"])
@@ -309,13 +331,7 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// use go's internal tooling to split the path into module and version
-	if err := module.Check(path, version); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	mod, err := source.GetModule(path, version)
+	mod, err := source.GetModule(mapped, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -326,6 +342,10 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if strings.Contains(mod, mapped) {
+		mod = strings.Replace(mod, mapped, unmapped, 1)
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 	if _, err := io.WriteString(w, mod); err != nil {
 		log.Println("failed to write module to response:", err)
@@ -334,10 +354,19 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("===", r.URL, "===")
-	path, err := module.UnescapePath(mux.Vars(r)["module"])
+	unmapped, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	mapped, major, err := MapPath(unmapped)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if major != "" {
+		mapped = mapped + "/" + major
 	}
 
 	version, err := module.UnescapeVersion(mux.Vars(r)["version"])
@@ -346,13 +375,7 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// use go's internal tooling to split the path into module and version
-	if err := module.Check(path, version); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	content, timestamp, err := source.GetInfo(path, version)
+	content, timestamp, err := source.GetInfo(mapped, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -381,10 +404,20 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
 func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("===", r.URL, "===")
-	path, err := module.UnescapePath(mux.Vars(r)["module"])
+	unmapped := mux.Vars(r)["module"]
+	unmapped, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	mapped, major, err := MapPath(unmapped)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if major != "" {
+		mapped = mapped + "/" + major
 	}
 
 	version, err := module.UnescapeVersion(mux.Vars(r)["version"])
@@ -393,13 +426,7 @@ func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// use go's internal tooling to split the path into module and version
-	if err := module.Check(path, version); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	tmp, err := source.GetArchive(path, version)
+	tmp, err := source.GetArchive(mapped, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -415,22 +442,6 @@ func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("failed to write zip archive to response:", err)
 	}
 
-}
-
-func ServeAction(ctx *cli.Context) error {
-	router := mux.NewRouter()
-	router.HandleFunc("/{module:.+}/@v/list", ListHandler)
-	router.HandleFunc("/{module:.+}/@latest", LatestHandler)
-	router.HandleFunc("/{module:.+}/@v/{version}.mod", ModHandler)
-	router.HandleFunc("/{module:.+}/@v/{version}.info", InfoHandler)
-	router.HandleFunc("/{module:.+}/@v/{version}.zip", ArchiveHandler)
-	http.Handle("/", router)
-
-	if err := http.ListenAndServe("127.0.0.1:8000", nil); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func BuildArchive(url, tag string, w io.Writer) error {

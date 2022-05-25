@@ -168,7 +168,6 @@ func CheckInfo(expected, actual backend.Backend, t *testing.T) {
 
 			if ts0 != ts1 {
 				t.Errorf("expected timestamp '%s', got '%s'", ts0, ts1)
-
 			}
 		})
 	}
@@ -191,8 +190,7 @@ func CheckArchive(expected, actual backend.Backend, t *testing.T) {
 			if errors.Is(err0, backend.ErrNotFound) && errors.Is(err1, backend.ErrNotFound) {
 			} else if err0 != err1 {
 				t.Errorf("expected '%s', got '%s'", err0, err1)
-			}
-			if r0 != nil && r1 != nil {
+			} else if r0 != nil && r1 != nil {
 				//Do I need to test this in reverse?
 				CheckZips(r0, r1, t)
 			}

@@ -6,36 +6,51 @@ import (
 )
 
 func TestGitlab_GetList(t *testing.T) {
-	trusted := backend.ModuleProxy{}
-	backend := backend.NewGitLab("")
+	expected := backend.ModuleProxy{}
+	actual, err := backend.NewGitLab("", "mirror8")
+	if err != nil {
+		t.Fatal("failed to create gitlab backend", err)
+	}
 
-	CheckList(trusted, backend, t)
+	CheckList(expected, actual, t)
 }
 
 func TestGitlab_GetLatest(t *testing.T) {
-	trusted := backend.ModuleProxy{}
-	backend := backend.NewGitLab("")
+	expected := backend.ModuleProxy{}
+	actual, err := backend.NewGitLab("", "mirror8")
+	if err != nil {
+		t.Fatal("failed to create gitlab backend", err)
+	}
 
-	CheckLatest(trusted, backend, t)
+	CheckLatest(expected, actual, t)
 }
 
 func TestGitlab_GetModule(t *testing.T) {
-	trusted := backend.ModuleProxy{}
-	backend := backend.NewGitLab("")
+	expected := backend.ModuleProxy{}
+	actual, err := backend.NewGitLab("", "mirror8")
+	if err != nil {
+		t.Fatal("failed to create gitlab backend", err)
+	}
 
-	CheckModule(trusted, backend, t)
+	CheckModule(expected, actual, t)
 }
 
 func TestGitlab_GetInfo(t *testing.T) {
-	trusted := backend.ModuleProxy{}
-	backend := backend.NewGitLab("")
+	expected := backend.ModuleProxy{}
+	actual, err := backend.NewGitLab("", "mirror8")
+	if err != nil {
+		t.Fatal("failed to create gitlab backend", err)
+	}
 
-	CheckInfo(trusted, backend, t)
+	CheckInfo(expected, actual, t)
 }
 
 func TestGitlab_GetArchive(t *testing.T) {
-	trusted := backend.ModuleProxy{}
-	backend := backend.NewGitLab("")
+	expected := backend.ModuleProxy{}
+	actual, err := backend.NewGitLab("", "mirror8")
+	if err != nil {
+		t.Fatal("failed to create gitlab backend", err)
+	}
 
-	CheckArchive(trusted, backend, t)
+	CheckArchive(expected, actual, t)
 }

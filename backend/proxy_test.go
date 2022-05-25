@@ -36,7 +36,7 @@ func TestModuleProxy_GetList(t *testing.T) {
 		t.Error("got unexpected error", err)
 	} else {
 		sort.Strings(versions)
-		expected := []string{"v2.0.0"}
+		expected := []string{"v2.0.0", "v2.1.0"}
 		if !reflect.DeepEqual(versions, expected) {
 			t.Errorf("expected %s, got %s", expected, versions)
 		}
@@ -68,11 +68,11 @@ func TestModuleProxy_GetLatest(t *testing.T) {
 	if version, timestamp, err := b.GetLatest("github.com/wandel/modprox_test", "/v2"); err != nil {
 		t.Error("got unexpected error", err)
 	} else {
-		if version != "v2.0.0" {
-			t.Errorf("expected version 'v2.0.0', got %s", version)
+		if version != "v2.1.0" {
+			t.Errorf("expected version 'v2.1.0', got %s", version)
 		}
-		if timestamp.Format(time.RFC3339) != "2022-05-17T00:44:19Z" {
-			t.Errorf("expected timestamp '2022-05-17T00:44:19Z', got %s", timestamp.Format(time.RFC3339))
+		if timestamp.Format(time.RFC3339) != "2022-05-24T12:01:26Z" {
+			t.Errorf("expected timestamp '2022-05-24T12:01:26Z', got %s", timestamp.Format(time.RFC3339))
 		}
 	}
 }

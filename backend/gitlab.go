@@ -18,33 +18,31 @@ import (
 )
 
 type GitLab struct {
-	host  string
-	token string
-	group string
+	client *gitlab.Client
+	group  string
 }
 
-func NewGitLab(token string) Backend {
-	return &GitLab{
-		token: token,
+func NewGitLab(token, group string) (Backend, error) {
+	client, err := gitlab.NewClient(token)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create gitlab client")
 	}
+
+	return GitLab{
+		client: client,
+		group:  group,
+	}, nil
 }
 
 func (b GitLab) GetList(path, major string) ([]string, error) {
-	client, err := gitlab.NewClient(b.token)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to gitlab")
-	}
-
-	// sync repository
-	// TODO trigger and wait for a sync
-
 	// fetch a list of tags
-	tags, resp, err := client.Tags.ListTags("mirror8/"+path, &gitlab.ListTagsOptions{
+	tags, resp, err := b.client.Tags.ListTags(b.group+"/"+path, &gitlab.ListTagsOptions{
 		ListOptions: gitlab.ListOptions{
 			PerPage: 1000, // TODO should do this properly in the future
 		},
 	}, nil)
 	if err != nil {
+		log.Println(resp.Request.URL, resp.StatusCode)
 		if resp.StatusCode == http.StatusNotFound {
 			return nil, ErrNotFound
 		}
@@ -54,7 +52,6 @@ func (b GitLab) GetList(path, major string) ([]string, error) {
 	// filter tag based on version
 	tmp := map[string]bool{}
 	for _, tag := range tags {
-		log.Println(tag.Name)
 		// go helpfully provides a simple function to validate a path and version (tag) combination.
 		if err := module.CheckPathMajor(tag.Name, major); err == nil {
 			tmp[module.CanonicalVersion(tag.Name)] = true
@@ -67,22 +64,13 @@ func (b GitLab) GetList(path, major string) ([]string, error) {
 }
 
 func (b GitLab) GetLatest(path, major string) (string, time.Time, error) {
-	client, err := gitlab.NewClient(b.token)
-	if err != nil {
-		return "", time.Unix(0, 0), errors.Wrap(err, "failed to connect to gitlab")
-	}
-
-	// sync repository
-	// TODO trigger and wait for a sync
-
 	// fetch a list of tags
-	tags, resp, err := client.Tags.ListTags("mirror8/"+path, &gitlab.ListTagsOptions{
+	tags, resp, err := b.client.Tags.ListTags(b.group+"/"+path, &gitlab.ListTagsOptions{
 		ListOptions: gitlab.ListOptions{
 			PerPage: 1000, // TODO should do this properly in the future
 
 		},
 	}, nil)
-	log.Println(resp.Request.URL, resp.StatusCode, resp.Status)
 
 	if err != nil {
 		if resp.StatusCode == http.StatusNotFound {
@@ -134,12 +122,12 @@ func (b GitLab) GetModule(path, version string) (string, error) {
 		}
 	}
 
-	client, err := gitlab.NewClient(b.token)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to connect to gitlab")
-	}
+	//project, submodule, err := b.FindProject(b.group + name)
+	//if err != nil {
+	//
+	//}
 
-	content, resp, err := client.RepositoryFiles.GetRawFile("mirror8/"+name, "go.mod", &gitlab.GetRawFileOptions{
+	content, resp, err := b.client.RepositoryFiles.GetRawFile(b.group+"/"+name, "go.mod", &gitlab.GetRawFileOptions{
 		Ref: gitlab.String(version),
 	})
 	if err != nil {
@@ -170,12 +158,7 @@ func (b GitLab) GetInfo(path, version string) (string, time.Time, error) {
 		return "", time.Unix(0, 0), errors.New("failed to split path/version")
 	}
 
-	client, err := gitlab.NewClient(b.token)
-	if err != nil {
-		return "", time.Unix(0, 0), errors.Wrap(err, "failed to connect to gitlab")
-	}
-
-	if tag, resp, err := client.Tags.GetTag("mirror8/"+name, version, nil); err != nil {
+	if tag, resp, err := b.client.Tags.GetTag(b.group+"/"+name, version, nil); err != nil {
 		if resp.StatusCode == http.StatusNotFound {
 			return "", time.Unix(0, 0), ErrNotFound
 		}
@@ -193,6 +176,7 @@ func (b GitLab) GetArchive(path, version string) (io.Reader, error) {
 		return nil, errors.New("failed to split path/version")
 	}
 
+	original := version
 	if module.IsPseudoVersion(version) {
 		if commit, err := module.PseudoVersionRev(version); err != nil {
 			return nil, errors.Wrap(err, "Failed to parse pseudo version")
@@ -201,13 +185,8 @@ func (b GitLab) GetArchive(path, version string) (io.Reader, error) {
 		}
 	}
 
-	client, err := gitlab.NewClient(b.token)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to gitlab")
-	}
-
 	var buffer bytes.Buffer
-	if resp, err := client.Repositories.StreamArchive("mirror8/"+name, &buffer, &gitlab.ArchiveOptions{
+	if resp, err := b.client.Repositories.StreamArchive(b.group+"/"+name, &buffer, &gitlab.ArchiveOptions{
 		Format: gitlab.String("zip"),
 		SHA:    gitlab.String(version),
 	}, nil); err != nil {
@@ -223,15 +202,7 @@ func (b GitLab) GetArchive(path, version string) (io.Reader, error) {
 		return nil, errors.Wrap(err, "failed to create new zip reader")
 	}
 
-	if path, err = module.EscapePath(path); err != nil {
-		return nil, errors.Wrap(err, "failed escape module path")
-	}
-
-	if version, err = module.EscapeVersion(version); err != nil {
-		return nil, errors.Wrap(err, "failed to escape version")
-	}
-
-	base := path + "@" + version + "/"
+	base := path + "@" + original + "/"
 
 	// we buffer the new zip file in memory so we can return useful http error codes/messages.
 	// if we did zip.NewWriter(w) then as soon as the zip writer flushed data, the http server would
