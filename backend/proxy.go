@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/pkg/errors"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
-type ModuleProxy struct{}
+type ModuleProxy struct {
+}
 
 func (b ModuleProxy) GetList(path, major string) ([]string, error) {
+	log.Println("list:", path, major)
 	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/list", path+major)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -38,6 +42,7 @@ func (b ModuleProxy) GetList(path, major string) ([]string, error) {
 }
 
 func (b ModuleProxy) GetLatest(path, major string) (string, time.Time, error) {
+	log.Println("latest:", path, major)
 	url := fmt.Sprintf("https://proxy.golang.org/%s/@latest", path+major)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -62,7 +67,7 @@ func (b ModuleProxy) GetLatest(path, major string) (string, time.Time, error) {
 }
 
 func (b ModuleProxy) GetModule(path, version string) (string, error) {
-
+	log.Println("module:", path, version)
 	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.mod", path, version)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -83,6 +88,7 @@ func (b ModuleProxy) GetModule(path, version string) (string, error) {
 }
 
 func (b ModuleProxy) GetInfo(path, version string) (string, time.Time, error) {
+	log.Println("info:", path, version)
 	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.info", path, version)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -107,6 +113,7 @@ func (b ModuleProxy) GetInfo(path, version string) (string, time.Time, error) {
 }
 
 func (b ModuleProxy) GetArchive(path, version string) (io.Reader, error) {
+	log.Println("archive:", path, version)
 	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.zip", path, version)
 	resp, err := http.Get(url)
 	if err != nil {

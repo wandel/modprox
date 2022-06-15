@@ -1,143 +1,161 @@
 package backend_test
 
 import (
-	"github.com/pkg/errors"
-	"github.com/wandel/modprox/backend"
 	"log"
 	"net/http"
 	"reflect"
-	"sort"
 	"testing"
 	"time"
+
+	"golang.org/x/mod/module"
+
+	"github.com/pkg/errors"
+	"github.com/wandel/modprox/backend"
 )
 
 func TestModuleProxy_GetList(t *testing.T) {
 	b := backend.ModuleProxy{}
 
-	if _, err := b.GetList("github.com/wandel/dne", ""); err != nil {
-		if !errors.Is(err, backend.ErrNotFound) {
-			t.Error("expected a ErrNotFound, got", err)
-		}
-	} else {
-		t.Errorf("expected a ErrNotFound, got nil error")
+	tests := []struct {
+		path     string
+		versions []string
+	}{
+		{"github.com/wandel/dne", nil},
+		{"github.com/wandel/modprox_test", []string{"v0.1.0", "v0.2.0", "v1.0.0", "v1.0.1"}},
+		{"github.com/wandel/modprox_test/v2", []string{"v2.0.0", "v2.1.0"}},
+		{"github.com/wandel/modprox_test/v3", nil},
+		{"github.com/wandel/modprox_test/subpackage", []string{"v0.1.0", "v1.0.0"}},
+		{"github.com/wandel/modprox_test/subpackage/v2", nil},
 	}
 
-	if versions, err := b.GetList("github.com/wandel/modprox_test", ""); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		sort.Strings(versions)
-		expected := []string{"v0.1.0", "v0.2.0", "v1.0.0", "v1.0.1"}
-		if !reflect.DeepEqual(versions, expected) {
-			t.Errorf("expected %s, got %s", expected, versions)
-		}
-	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			prefix, major, ok := module.SplitPathVersion(tt.path)
+			if !ok {
+				t.Fatalf("failed to split path: %s", tt.path)
+			}
 
-	if versions, err := b.GetList("github.com/wandel/modprox_test", "/v2"); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		sort.Strings(versions)
-		expected := []string{"v2.0.0", "v2.1.0"}
-		if !reflect.DeepEqual(versions, expected) {
-			t.Errorf("expected %s, got %s", expected, versions)
-		}
+			versions, err := b.GetList(prefix, major)
+			if tt.versions == nil {
+				if err == nil {
+					t.Fatal("expected an error")
+				} else if !errors.Is(err, backend.ErrNotFound) {
+					t.Fatal("expected a 404 not found error, got", err)
+				}
+			} else if !reflect.DeepEqual(tt.versions, versions) {
+				t.Fatalf("expected '%s', got '%s'", tt.versions, versions)
+			}
+		})
 	}
 }
 
 func TestModuleProxy_GetLatest(t *testing.T) {
 	b := backend.ModuleProxy{}
 
-	if _, _, err := b.GetLatest("github.com/wandel/dne", ""); err != nil {
-		if !errors.Is(err, backend.ErrNotFound) {
-			t.Error("expected a ErrNotFound, got", err)
-		}
-	} else {
-		t.Errorf("expected a ErrNotFound, got nil error")
+	tests := []struct {
+		path      string
+		version   string
+		timestamp string
+	}{
+		{"github.com/wandel/dne", "", ""},
+		{"github.com/wandel/modprox_test", "v1.0.1", "2022-05-17T00:17:27Z"},
+		{"github.com/wandel/modprox_test/v2", "v2.1.0", "2022-05-24T12:01:26Z"},
+		{"github.com/wandel/modprox_test/v3", "", ""},
+		{"github.com/wandel/modprox_test/subpackage", "v1.0.0", "2022-05-24T12:01:26Z"},
+		{"github.com/wandel/modprox_test/subpackage/v2", "", ""},
 	}
 
-	if version, timestamp, err := b.GetLatest("github.com/wandel/modprox_test", ""); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		if version != "v1.0.1" {
-			t.Errorf("expected version 'v1.0.1', got %s", version)
-		}
-		if timestamp.Format(time.RFC3339) != "2022-05-17T00:17:27Z" {
-			t.Errorf("expected timestamp '2022-05-17T00:17:27Z', got %s", timestamp.Format(time.RFC3339))
-		}
-	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			prefix, major, ok := module.SplitPathVersion(tt.path)
+			if !ok {
+				t.Fatalf("failed to split path: %s", tt.path)
+			}
 
-	if version, timestamp, err := b.GetLatest("github.com/wandel/modprox_test", "/v2"); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		if version != "v2.1.0" {
-			t.Errorf("expected version 'v2.1.0', got %s", version)
-		}
-		if timestamp.Format(time.RFC3339) != "2022-05-24T12:01:26Z" {
-			t.Errorf("expected timestamp '2022-05-24T12:01:26Z', got %s", timestamp.Format(time.RFC3339))
-		}
+			version, timestamp, err := b.GetLatest(prefix, major)
+			if tt.version == "" && tt.timestamp == "" {
+				if !errors.Is(err, backend.ErrNotFound) {
+					t.Fatal("expected a 404 not found error, got", err)
+				}
+			} else {
+				if tt.version != version {
+					t.Errorf("expected %s, got '%s'", tt.version, version)
+				}
+
+				if timestamp.Format(time.RFC3339) != tt.timestamp {
+					t.Errorf("expected timestamp '%s', got '%s'", tt.timestamp, timestamp.Format(time.RFC3339))
+				}
+			}
+		})
 	}
 }
 
 func TestModuleProxy_GetModule(t *testing.T) {
 	b := backend.ModuleProxy{}
 
-	if _, err := b.GetModule("github.com/wandel/dne", "v1.0.0"); err != nil {
-		if !errors.Is(err, backend.ErrNotFound) {
-			t.Error("expected a ErrNotFound, got", err)
-		}
-	} else {
-		t.Errorf("expected a ErrNotFound, got nil error")
+	tests := []struct {
+		path    string
+		version string
+		module  string
+	}{
+		{"github.com/wandel/dne", "v1.0.0", ""},
+		{"github.com/wandel/modprox_test", "v0.1.0", "module github.com/wandel/modprox_test"},
+		{"github.com/wandel/modprox_test", "v1.0.1", "module github.com/wandel/modprox_test\n\ngo 1.18"},
+		{"github.com/wandel/modprox_test/v2", "v2.1.0", "module github.com/wandel/modprox_test/v2\n\ngo 1.18\n\nrequire github.com/pkg/errors v0.9.1 // indirect"},
+		{"github.com/wandel/modprox_test/v3", "v3.0.0", ""},
+		{"github.com/wandel/modprox_test/subpackage", "v0.1.0", ""},
+		{"github.com/wandel/modprox_test/subpackage", "v1.0.0", "module github.com/wandel/modprox_test/subpackage\n\ngo 1.18"},
+		{"github.com/wandel/modprox_test/subpackage/v2", "v2.0.0", ""},
 	}
 
-	if mod, err := b.GetModule("github.com/wandel/modprox_test", "v0.1.0"); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		expected := "module github.com/wandel/modprox_test"
-		if mod != expected {
-			t.Errorf("expected module result '%s', got '%s'", expected, mod)
-		}
-	}
-
-	if mod, err := b.GetModule("github.com/wandel/modprox_test/v2", "v2.0.0"); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		expected := "module github.com/wandel/modprox_test/v2\n\ngo 1.18\n\nrequire github.com/pkg/errors v0.9.1 // indirect"
-		if mod != expected {
-			t.Errorf("expected version '%s', got '%s'", expected, mod)
-		}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			module, err := b.GetModule(tt.path, tt.version)
+			if tt.module == "" {
+				if !errors.Is(err, backend.ErrNotFound) {
+					t.Fatal("expected a 404 not found error, got", err)
+				}
+			} else if tt.module != module {
+				t.Errorf("expected module '%s', got '%s'", tt.module, module)
+			}
+		})
 	}
 }
 
 func TestModuleProxy_GetInfo(t *testing.T) {
 	b := backend.ModuleProxy{}
 
-	if _, _, err := b.GetInfo("github.com/wandel/dne", "v1.0.0"); err != nil {
-		if !errors.Is(err, backend.ErrNotFound) {
-			t.Error("expected a ErrNotFound, got", err)
-		}
-	} else {
-		t.Errorf("expected a ErrNotFound, got nil error")
+	tests := []struct {
+		path      string
+		version   string
+		timestamp string
+	}{
+		{"github.com/wandel/dne", "v1.0.0", ""},
+		{"github.com/wandel/modprox_test", "v1.0.1", "2022-05-17T00:17:27Z"},
+		{"github.com/wandel/modprox_test/v2", "v2.1.0", "2022-05-24T12:01:26Z"},
+		{"github.com/wandel/modprox_test/v3", "", ""},
+		{"github.com/wandel/modprox_test/subpackage", "v0.1.0", ""},
+		{"github.com/wandel/modprox_test/subpackage", "v1.0.0", "2022-05-24T12:01:26Z"},
+		{"github.com/wandel/modprox_test/subpackage/v2", "", ""},
 	}
 
-	if version, timestamp, err := b.GetInfo("github.com/wandel/modprox_test", "v0.1.0"); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		if version != "v0.1.0" {
-			t.Errorf("expected version 'v0.1.0', got %s", version)
-		}
-		if timestamp.Format(time.RFC3339) != "2022-05-17T00:04:48Z" {
-			t.Errorf("expected timestamp '2022-05-17T00:04:48Z', got %s", timestamp.Format(time.RFC3339))
-		}
-	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			version, timestamp, err := b.GetInfo(tt.path, tt.version)
+			if tt.timestamp == "" {
+				if !errors.Is(err, backend.ErrNotFound) {
+					t.Fatal("expected a 404 not found error, got", err)
+				}
+			} else {
+				if tt.version != version {
+					t.Errorf("expected %s, got '%s'", tt.version, version)
+				}
 
-	if version, timestamp, err := b.GetInfo("github.com/wandel/modprox_test/v2", "v2.0.0"); err != nil {
-		t.Error("got unexpected error", err)
-	} else {
-		if version != "v2.0.0" {
-			t.Errorf("expected version 'v2.0.0', got %s", version)
-		}
-		if timestamp.Format(time.RFC3339) != "2022-05-17T00:44:19Z" {
-			t.Errorf("expected timestamp '2022-05-17T00:44:19Z', got %s", timestamp.Format(time.RFC3339))
-		}
+				if timestamp.Format(time.RFC3339) != tt.timestamp {
+					t.Errorf("expected timestamp '%s', got '%s'", tt.timestamp, timestamp.Format(time.RFC3339))
+				}
+			}
+		})
 	}
 }
 

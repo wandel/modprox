@@ -22,10 +22,11 @@ func TestMapPath(t *testing.T) {
 		{"google.golang.org/protobuf", "github.com/protocolbuffers/protobuf-go", ""},
 		{"google.golang.org/api", "github.com/googleapis/google-api-go-client", ""},
 		{"google.golang.org/genproto", "github.com/googleapis/go-genproto", ""},
-		{"go.opentelemetry.io/proto/otlp", "github.com/open-telemetry/opentelemetry-proto-go", ""},
+		{"go.opentelemetry.io/proto/otlp", "github.com/open-telemetry/opentelemetry-proto-go/otlp", ""},
 		{"google.golang.org/appengine", "github.com/golang/appengine", ""},
 		{"honnef.co/go/tools", "github.com/dominikh/go-tools", ""},
 		{"honnef.co/go/tools/v2", "github.com/dominikh/go-tools", "v2"},
+		{"cloud.google.com/go/vision/v2", "github.com/googleapis/google-cloud-go/vision", "v2"},
 	}
 
 	for _, tt := range tests {

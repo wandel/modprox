@@ -1,8 +1,9 @@
 package backend_test
 
 import (
-	"github.com/wandel/modprox/backend"
 	"testing"
+
+	"github.com/wandel/modprox/backend"
 )
 
 func TestGitlab_GetList(t *testing.T) {
