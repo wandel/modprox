@@ -5,40 +5,31 @@ import (
 	"testing"
 )
 
-var actual *backend.Direct
+var actual backend.Direct
+var expected backend.ModuleProxy
 
 func init() {
-	actual = &backend.Direct{}
 	actual.Load("c:\\temp\\cache")
 }
 
 func TestDirect_GetList(t *testing.T) {
-	expected := &backend.ModuleProxy{}
-	CheckList(expected, actual, t)
+	CheckList(&expected, &actual, t)
 }
 
 func TestDirect_GetLatest(t *testing.T) {
-	expected := &backend.ModuleProxy{}
-
-	CheckLatest(expected, actual, t)
+	CheckLatest(&expected, &actual, t)
 }
 
 func TestDirect_GetModule(t *testing.T) {
-	expected := &backend.ModuleProxy{}
-
-	CheckModule(expected, actual, t)
+	CheckModule(&expected, &actual, t)
 }
 
 func TestDirect_GetInfo(t *testing.T) {
-	expected := &backend.ModuleProxy{}
-
-	CheckInfo(expected, actual, t)
+	CheckInfo(&expected, &actual, t)
 }
 
 func TestDirect_GetArchive(t *testing.T) {
-	expected := &backend.ModuleProxy{}
-
-	CheckArchive(expected, actual, t)
+	CheckArchive(&expected, &actual, t)
 }
 
 func TestDirect_RepoCache(t *testing.T) {

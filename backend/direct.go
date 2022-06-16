@@ -32,7 +32,6 @@ type Direct struct {
 }
 
 func (d *Direct) Load(cache string) error {
-	log.Println("loading cache")
 	if err := filepath.Walk(cache, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -52,7 +51,7 @@ func (d *Direct) Load(cache string) error {
 				return filepath.SkipDir
 			}
 			key = filepath.ToSlash(key)
-			log.Println("[CACHE]", path, "->", key)
+			//log.Println("[CACHE]", path, "->", key)
 			d.cache.Store(key, &Repo{r: repo})
 			return filepath.SkipDir
 		}
@@ -76,10 +75,15 @@ func splitSubModule(path, base string) string {
 }
 
 func ListRemote(path string) ([]*plumbing.Reference, error) {
+	url, _, err := utils.MapPath(path)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to map to a repository")
+	}
+
 	remote := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
 		Name: "origin",
 		URLs: []string{
-			fmt.Sprintf("https://%s", path),
+			fmt.Sprintf("https://%s", url),
 		},
 	})
 
@@ -137,6 +141,7 @@ func (b *Direct) getRepository(path string) (*Repo, string, error) {
 	repo, err := git.PlainClone(cachePath, true, &git.CloneOptions{
 		URL:        fmt.Sprintf("https://%s", url),
 		RemoteName: git.DefaultRemoteName,
+		Tags:       git.AllTags,
 	})
 	if err != nil {
 		log.Printf("[ERROR] failed to clone repository: url=%s, base=%s, err=%s\n", url, base, err)
@@ -195,12 +200,12 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 	repo.Lock()
 	defer repo.Unlock()
 	if repo.r == nil {
-		return "", time.Unix(0, 0), ErrNotFound
+		return "", time.Unix(0, 0).UTC(), ErrNotFound
 	}
 
 	submodule := splitSubModule(path, base)
 
-	tags, err := repo.r.Tags()
+	tags, err := repo.r.TagObjects()
 	if err != nil {
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to get tags")
 	}
@@ -214,17 +219,17 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 			break
 		}
 
-		if !strings.HasPrefix(tag.Name().Short(), submodule) {
+		if !strings.HasPrefix(tag.Name, submodule) {
 			continue
 		}
 
-		tmp := strings.TrimPrefix(strings.TrimPrefix(tag.Name().Short(), submodule), "/")
+		tmp := strings.TrimPrefix(strings.TrimPrefix(tag.Name, submodule), "/")
 		if err := module.CheckPathMajor(tmp, major); err != nil {
 			continue
 		}
 
-		if commit, err := repo.r.CommitObject(tag.Hash()); err != nil {
-			log.Println("failed to lookup commit:", err)
+		if commit, err := tag.Commit(); err != nil {
+			log.Println("failed to lookup commit:", tag.Hash, err)
 			continue
 		} else if latest == nil {
 			latest = commit
@@ -247,7 +252,7 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 		if err != nil {
 			return "", time.Unix(0, 0), ErrNotFound
 		}
-		version = module.PseudoVersion("v0.0.0", "", commit.Committer.When.UTC(), ref.Hash().String())
+		version = module.PseudoVersion("v0", "", commit.Committer.When.UTC(), ref.Hash().String())
 		return version, commit.Committer.When.UTC(), nil
 	}
 
@@ -255,7 +260,12 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 }
 
 func (b *Direct) GetModule(path, version string) (string, error) {
+	incompatible := strings.HasSuffix(version, "+incompatible")
+	version = strings.TrimSuffix(version, "+incompatible")
 	path, major, _ := module.SplitPathVersion(path)
+	if incompatible && major != "" {
+		return "", errors.Errorf("major version suffix should not be provided on a +incompatible version: version='%s', path='%s'", path, version)
+	}
 	repo, base, err := b.getRepository(path)
 	if err != nil {
 		return "", err

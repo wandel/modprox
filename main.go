@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -15,6 +14,7 @@ import (
 	"github.com/urfave/cli"
 	"github.com/wandel/modprox/backend"
 	"github.com/wandel/modprox/utils"
+
 	"golang.org/x/mod/module"
 )
 
@@ -102,7 +102,6 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
-	// log.Println("===", unmapped, "===")
 
 	path, err := module.UnescapePath(mapped)
 	if err != nil {
@@ -134,20 +133,10 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 
 func ModHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
-	unmapped, err := module.UnescapePath(mux.Vars(r)["module"])
+	path, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	// log.Println("===", unmapped, "===")
-
-	mapped, major, err := utils.MapPath(unmapped)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-	}
-
-	if major != "" {
-		mapped = mapped + "/" + major
 	}
 
 	version, err := module.UnescapeVersion(mux.Vars(r)["version"])
@@ -156,7 +145,7 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mod, err := source.GetModule(mapped, version)
+	mod, err := source.GetModule(path, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -167,10 +156,6 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if strings.Contains(mod, mapped) {
-		mod = strings.Replace(mod, mapped, unmapped, 1)
-	}
-
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 	if _, err := io.WriteString(w, mod); err != nil {
 		// log.Println("failed to write module to response:", err)
@@ -179,20 +164,10 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
-	unmapped, err := module.UnescapePath(mux.Vars(r)["module"])
+	path, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	// log.Println("===", unmapped, "===")
-
-	mapped, major, err := utils.MapPath(unmapped)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-	}
-
-	if major != "" {
-		mapped = mapped + "/" + major
 	}
 
 	version, err := module.UnescapeVersion(mux.Vars(r)["version"])
@@ -201,7 +176,8 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, timestamp, err := source.GetInfo(mapped, version)
+	log.Println("[SERVICE-INFO]", path, version)
+	content, timestamp, err := source.GetInfo(path, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -230,21 +206,10 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
 func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
-	unmapped := mux.Vars(r)["module"]
-	unmapped, err := module.UnescapePath(mux.Vars(r)["module"])
+	path, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	// log.Println("===", unmapped, "===")
-
-	mapped, major, err := utils.MapPath(unmapped)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-	}
-
-	if major != "" {
-		mapped = mapped + "/" + major
 	}
 
 	version, err := module.UnescapeVersion(mux.Vars(r)["version"])
@@ -253,7 +218,7 @@ func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmp, err := source.GetArchive(unmapped, version)
+	tmp, err := source.GetArchive(path, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
