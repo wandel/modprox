@@ -18,6 +18,15 @@ func MapPath(path string) (string, string, error) {
 		"honnef.co/go/tools":          "github.com/dominikh/go-tools",
 		"golang.org/x":                "github.com/golang",
 		"cloud.google.com/go":         "github.com/googleapis/google-cloud-go",
+		"go.mongodb.org/mongo-driver": "github.com/mongodb/mongo-go-driver",
+		"go.uber.org":                 "github.com/uber-go",
+		"go.opencensus.io":            "github.com/census-instrumentation/opencensus-go",
+		"gotest.tools":                "github.com/gotestyourself/gotest.tools",
+		"bazil.org/fuse":              "github.com/bazil/fuse",
+		"go.etcd.io/bbolt":            "github.com/etcd-io/bbolt",
+		"rsc.io":                      "github.com/rsc",
+		"k8s.io":                      "github.com/kubernetes",
+		"go.etcd.io":                  "github.com/etcd-io",
 	}
 
 	if err := module.CheckPath(path); err != nil {
