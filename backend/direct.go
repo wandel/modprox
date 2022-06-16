@@ -4,8 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
-	"github.com/wandel/modprox/utils"
 	"io"
+	"io/fs"
 	"log"
 	path2 "path"
 	"path/filepath"
@@ -20,15 +20,55 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/memory"
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/wandel/modprox/utils"
+
 	"golang.org/x/exp/maps"
 	"golang.org/x/mod/module"
 )
 
 type Direct struct {
 	cache sync.Map
-	locks sync.Map
+}
+
+func (d *Direct) Load(cache string) error {
+	log.Println("loading cache")
+	if err := filepath.Walk(cache, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		} else if !info.IsDir() {
+			log.Println("failed to open git repository:", path, err)
+			return filepath.SkipDir
+		} else if repo, err := git.PlainOpen(path); err != nil {
+			return nil
+		} else {
+			// work around for short hashes not resolving on first request for repos opened with PlainOpen
+			// https://github.com/go-git/go-git/issues/148
+			repo.ResolveRevision(plumbing.Revision("HEAD"))
+
+			key, err := filepath.Rel(cache, path)
+			if err != nil {
+				log.Println("failed to load cache", err)
+				return filepath.SkipDir
+			}
+			key = filepath.ToSlash(key)
+			log.Println("[CACHE]", path, "->", key)
+			d.cache.Store(key, &Repo{r: repo})
+			return filepath.SkipDir
+		}
+
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "failed to load repositories from cache")
+	}
+
+	log.Println("loaded cache")
+	return nil
+}
+
+type Repo struct {
+	sync.Mutex
+	r *git.Repository
 }
 
 func splitSubModule(path, base string) string {
@@ -51,7 +91,7 @@ func ListRemote(path string) ([]*plumbing.Reference, error) {
 	return refs, err
 }
 
-func (b *Direct) getRepository(path string) (*git.Repository, string, error) {
+func (b *Direct) getRepository(path string) (*Repo, string, error) {
 	mapUrl := func(path string) string {
 		if mapped, _, err := utils.MapPath(path); err != nil {
 			return ""
@@ -63,7 +103,7 @@ func (b *Direct) getRepository(path string) (*git.Repository, string, error) {
 	for tmp := path; tmp != "."; tmp = path2.Dir(tmp) {
 		if repo, found := b.cache.Load(tmp); found {
 			log.Println("[CACHE]", path)
-			return repo.(*git.Repository), tmp, nil
+			return repo.(*Repo), tmp, nil
 		}
 	}
 
@@ -78,23 +118,34 @@ func (b *Direct) getRepository(path string) (*git.Repository, string, error) {
 		break
 	}
 
-	if base != "" {
-		url := mapUrl(base)
-		cachePath := filepath.Join("c:\\temp", "cache", uuid.New().String())
-		repo, err := git.PlainClone(cachePath, true, &git.CloneOptions{
-			URL:        url,
-			RemoteName: git.DefaultRemoteName,
-		})
-		if err != nil {
-			return nil, "", errors.Wrapf(err, "failed to clone repository '%s'", base)
-		}
-		log.Println("[CLONE]", base, "->", cachePath)
-		b.cache.Store(base, repo)
-		return repo, base, nil
+	if base == "" {
+		log.Println("[MISSING]", path)
+		return nil, "", ErrNotFound
 	}
 
-	log.Println("[MISSED]", path)
-	return nil, "", ErrNotFound
+	placeholder := &Repo{}
+	placeholder.Lock()
+	defer placeholder.Unlock()
+
+	if r2, loaded := b.cache.LoadOrStore(base, placeholder); loaded {
+		// another request has / is loading this repo
+		return r2.(*Repo), base, nil
+	}
+
+	url := mapUrl(base)
+	cachePath := filepath.Join("c:\\temp", "cache", base)
+	repo, err := git.PlainClone(cachePath, true, &git.CloneOptions{
+		URL:        fmt.Sprintf("https://%s", url),
+		RemoteName: git.DefaultRemoteName,
+	})
+	if err != nil {
+		log.Printf("[ERROR] failed to clone repository: url=%s, base=%s, err=%s\n", url, base, err)
+		return nil, "", errors.Wrapf(err, "failed to clone repository '%s'", base)
+	}
+
+	log.Println("[CLONE]", base, "->", cachePath)
+	placeholder.r = repo
+	return placeholder, base, nil
 }
 
 func (b *Direct) GetList(path, major string) ([]string, error) {
@@ -141,9 +192,15 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 		return "", time.Unix(0, 0), err
 	}
 
+	repo.Lock()
+	defer repo.Unlock()
+	if repo.r == nil {
+		return "", time.Unix(0, 0), ErrNotFound
+	}
+
 	submodule := splitSubModule(path, base)
 
-	tags, err := repo.Tags()
+	tags, err := repo.r.Tags()
 	if err != nil {
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to get tags")
 	}
@@ -166,7 +223,7 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 			continue
 		}
 
-		if commit, err := repo.CommitObject(tag.Hash()); err != nil {
+		if commit, err := repo.r.CommitObject(tag.Hash()); err != nil {
 			log.Println("failed to lookup commit:", err)
 			continue
 		} else if latest == nil {
@@ -181,12 +238,12 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 	if latest != nil {
 		return version, latest.Committer.When.UTC(), nil
 	} else if submodule == "" {
-		ref, err := repo.Head()
+		ref, err := repo.r.Head()
 		if err != nil {
 			return "", time.Unix(0, 0), ErrNotFound
 		}
 
-		commit, err := repo.CommitObject(ref.Hash())
+		commit, err := repo.r.CommitObject(ref.Hash())
 		if err != nil {
 			return "", time.Unix(0, 0), ErrNotFound
 		}
@@ -205,6 +262,12 @@ func (b *Direct) GetModule(path, version string) (string, error) {
 	}
 	submodule := splitSubModule(path, base)
 
+	repo.Lock()
+	defer repo.Unlock()
+	if repo.r == nil {
+		return "", ErrNotFound
+	}
+
 	rev := version
 	if module.IsPseudoVersion(version) {
 		rev, err = module.PseudoVersionRev(version)
@@ -215,7 +278,7 @@ func (b *Direct) GetModule(path, version string) (string, error) {
 		rev = submodule + "/" + version
 	}
 
-	hash, err := repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := repo.r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
 			return "", ErrNotFound
@@ -223,7 +286,7 @@ func (b *Direct) GetModule(path, version string) (string, error) {
 		return "", errors.Wrap(err, "failed to resolve revision")
 	}
 
-	commit, err := repo.CommitObject(*hash)
+	commit, err := repo.r.CommitObject(*hash)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get commit object")
 	}
@@ -263,6 +326,12 @@ func (b *Direct) GetInfo(path, version string) (string, time.Time, error) {
 	}
 	submodule := splitSubModule(path, base)
 
+	repo.Lock()
+	defer repo.Unlock()
+	if repo.r == nil {
+		return "", time.Unix(0, 0), ErrNotFound
+	}
+
 	rev := version
 	if module.IsPseudoVersion(version) {
 		rev, _ = module.PseudoVersionRev(version)
@@ -270,12 +339,12 @@ func (b *Direct) GetInfo(path, version string) (string, time.Time, error) {
 		rev = submodule + "/" + version
 	}
 
-	hash, err := repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := repo.r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to resolve revision")
 	}
 
-	commit, err := repo.CommitObject(*hash)
+	commit, err := repo.r.CommitObject(*hash)
 	if err != nil {
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to get commit object")
 	}
@@ -293,8 +362,14 @@ func (b *Direct) GetArchive(path, version string) (io.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	submodule := splitSubModule(prefix, base)
 
+	repo.Lock()
+	defer repo.Unlock()
+	if repo.r == nil {
+		return nil, ErrNotFound
+	}
+
+	submodule := splitSubModule(prefix, base)
 	rev := version
 	if module.IsPseudoVersion(version) {
 		rev, err = module.PseudoVersionRev(version)
@@ -305,7 +380,7 @@ func (b *Direct) GetArchive(path, version string) (io.Reader, error) {
 		rev = submodule + "/" + version
 	}
 
-	hash, err := repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := repo.r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
 			return nil, ErrNotFound
@@ -313,7 +388,7 @@ func (b *Direct) GetArchive(path, version string) (io.Reader, error) {
 		return nil, errors.Wrap(err, "failed to resolve revision")
 	}
 
-	commit, err := repo.CommitObject(*hash)
+	commit, err := repo.r.CommitObject(*hash)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get commit object")
 	}

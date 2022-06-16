@@ -3,12 +3,13 @@ package backend_test
 import (
 	"archive/zip"
 	"bytes"
-	"golang.org/x/mod/module"
 	"io"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/module"
 
 	"github.com/pkg/errors"
 	"github.com/wandel/modprox/backend"

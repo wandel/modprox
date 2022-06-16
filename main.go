@@ -34,7 +34,11 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	app.Before = func(ctx *cli.Context) error {
-		source = backend.NewMultiBackend(&backend.Direct{})
+		be := &backend.Direct{}
+		if err := be.Load("c:\\temp\\cache"); err != nil {
+			return errors.Wrap(err, "failed to load ")
+		}
+		source = backend.NewMultiBackend(be)
 		return nil
 	}
 
