@@ -9,7 +9,8 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
+	ErrNotFound  = errors.New("not found")
+	ErrOutOfDate = errors.New("out of date")
 )
 
 type Backend interface {
@@ -74,31 +75,55 @@ func (mb MultiBackend) GetLatest(path, major string) (string, time.Time, error) 
 }
 
 func (mb MultiBackend) GetModule(path, version string) (string, error) {
+	outofdate := false
 	for _, backend := range mb.backends {
 		module, err := backend.GetModule(path, version)
 		if err == nil {
 			return module, nil
+		} else if errors.Is(err, ErrOutOfDate) {
+			outofdate = true
 		}
 	}
+
+	if outofdate {
+		return "", ErrOutOfDate
+	}
+
 	return "", ErrNotFound
 }
 
 func (mb MultiBackend) GetInfo(path, version string) (string, time.Time, error) {
+	outofdate := false
 	for _, backend := range mb.backends {
 		v, ts, err := backend.GetInfo(path, version)
 		if err == nil {
 			return v, ts, nil
+		} else if errors.Is(err, ErrOutOfDate) {
+			outofdate = true
 		}
 	}
+
+	if outofdate {
+		return "", time.Unix(0, 0), ErrOutOfDate
+	}
+
 	return "", time.Unix(0, 0), ErrNotFound
 }
 
 func (mb MultiBackend) GetArchive(path, version string) (io.Reader, error) {
+	outofdate := false
 	for _, backend := range mb.backends {
 		r, err := backend.GetArchive(path, version)
 		if err == nil {
 			return r, nil
+		} else if errors.Is(err, ErrOutOfDate) {
+			outofdate = true
 		}
 	}
+
+	if outofdate {
+		return nil, ErrOutOfDate
+	}
+
 	return nil, ErrNotFound
 }

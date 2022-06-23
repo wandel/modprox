@@ -28,11 +28,16 @@ import (
 )
 
 type Direct struct {
-	cache sync.Map
+	cache    sync.Map
+	CacheDir string
 }
 
-func (d *Direct) Load(cache string) error {
-	if err := filepath.Walk(cache, func(path string, info fs.FileInfo, err error) error {
+func (d *Direct) Load() error {
+	if d.CacheDir == "" {
+		return errors.New("Cache Directory is required")
+	}
+
+	if err := filepath.Walk(d.CacheDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		} else if !info.IsDir() {
@@ -41,11 +46,12 @@ func (d *Direct) Load(cache string) error {
 		} else if repo, err := git.PlainOpen(path); err != nil {
 			return nil
 		} else {
+
 			// work around for short hashes not resolving on first request for repos opened with PlainOpen
 			// https://github.com/go-git/go-git/issues/148
 			repo.ResolveRevision(plumbing.Revision("HEAD"))
 
-			key, err := filepath.Rel(cache, path)
+			key, err := filepath.Rel(d.CacheDir, path)
 			if err != nil {
 				log.Println("failed to load cache", err)
 				return filepath.SkipDir
@@ -68,6 +74,48 @@ func (d *Direct) Load(cache string) error {
 type Repo struct {
 	sync.Mutex
 	r *git.Repository
+}
+
+type Tag struct {
+	Name string
+	Date time.Time
+}
+
+func (r *Repo) Tags() ([]Tag, error) {
+	if r.r == nil {
+		return nil, errors.New("repository was not initialized")
+	}
+
+	var tags []Tag
+	refs, err := r.r.Tags()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to list tags")
+	}
+	defer refs.Close()
+
+	if err := refs.ForEach(func(ref *plumbing.Reference) error {
+		switch obj, err := r.r.TagObject(ref.Hash()); err {
+		case nil:
+			commit, err := obj.Commit()
+			if err != nil {
+				return errors.Wrapf(err, "failed to get commit for tag '%s'", obj.Name)
+			}
+			tags = append(tags, Tag{obj.Name, commit.Committer.When.UTC()})
+		case plumbing.ErrObjectNotFound:
+			commit, err := r.r.CommitObject(ref.Hash())
+			if err != nil {
+				return errors.Wrapf(err, "failed to get commit for tag: '%s'", ref.String())
+			}
+			tags = append(tags, Tag{ref.Name().Short(), commit.Committer.When.UTC()})
+		default:
+			return errors.Wrapf(err, "failed to resolve TagObject for %s", ref.String())
+		}
+		return nil
+	}); err != nil {
+		return nil, errors.Wrap(err, "failed to list tags")
+	}
+
+	return tags, nil
 }
 
 func splitSubModule(path, base string) string {
@@ -137,7 +185,7 @@ func (b *Direct) getRepository(path string) (*Repo, string, error) {
 	}
 
 	url := mapUrl(base)
-	cachePath := filepath.Join("c:\\temp", "cache", base)
+	cachePath := filepath.Join(b.CacheDir, base)
 	repo, err := git.PlainClone(cachePath, true, &git.CloneOptions{
 		URL:        fmt.Sprintf("https://%s", url),
 		RemoteName: git.DefaultRemoteName,
@@ -181,10 +229,6 @@ func (b *Direct) GetList(path, major string) ([]string, error) {
 			versions[version] = true
 		}
 
-		if len(versions) == 0 {
-			return nil, ErrNotFound
-		}
-
 		return maps.Keys(versions), nil
 	}
 
@@ -203,45 +247,65 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 		return "", time.Unix(0, 0).UTC(), ErrNotFound
 	}
 
-	submodule := splitSubModule(path, base)
+	if err := repo.r.Fetch(&git.FetchOptions{
+		Force: true,
+		Tags:  git.AllTags,
+	}); err != nil {
+		if !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			log.Println("failed to fetch updates:", err)
+		}
+	} else {
+		log.Println("[UPDATED]", path)
+	}
 
-	tags, err := repo.r.TagObjects()
+	submodule := splitSubModule(path, base)
+	var latest *plumbing.Reference
+	var commit *object.Commit
+
+	tags, err := repo.r.Tags()
 	if err != nil {
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to get tags")
 	}
-	defer tags.Close()
 
-	version := ""
-	var latest *object.Commit
-	for {
-		tag, err := tags.Next()
-		if errors.Is(err, io.EOF) {
-			break
+	if err := tags.ForEach(func(ref *plumbing.Reference) error {
+		if !strings.HasPrefix(ref.Name().Short(), submodule) {
+			return nil
 		}
 
-		if !strings.HasPrefix(tag.Name, submodule) {
-			continue
-		}
-
-		tmp := strings.TrimPrefix(strings.TrimPrefix(tag.Name, submodule), "/")
+		tmp := strings.TrimPrefix(strings.TrimPrefix(ref.Name().Short(), submodule), "/")
 		if err := module.CheckPathMajor(tmp, major); err != nil {
-			continue
+			return nil
 		}
 
-		if commit, err := tag.Commit(); err != nil {
-			log.Println("failed to lookup commit:", tag.Hash, err)
-			continue
-		} else if latest == nil {
-			latest = commit
-			version = tmp
-		} else if latest.Committer.When.Before(commit.Committer.When) {
-			latest = commit
-			version = tmp
+		switch obj, err := repo.r.TagObject(ref.Hash()); err {
+		case nil:
+			tmp, err := obj.Commit()
+			if err != nil {
+				return errors.Wrapf(err, "failed to get commit for tag '%s'", obj.Name)
+			} else if commit == nil || commit.Committer.When.Before(tmp.Committer.When) {
+				latest = ref
+				commit = tmp
+			}
+		case plumbing.ErrObjectNotFound:
+			tmp, err := repo.r.CommitObject(ref.Hash())
+			if err != nil {
+				return errors.Wrapf(err, "failed to get commit for tag: '%s'", ref.String())
+			} else if commit == nil || commit.Committer.When.Before(tmp.Committer.When) {
+				latest = ref
+				commit = tmp
+			}
+		default:
+			return errors.Wrapf(err, "failed to resolve TagObject for %s", ref.String())
 		}
+
+		return nil
+	}); err != nil {
+		return "", time.Unix(0, 0), errors.Wrap(err, "failed to list tags")
 	}
 
 	if latest != nil {
-		return version, latest.Committer.When.UTC(), nil
+		version := strings.TrimPrefix(strings.TrimPrefix(latest.Name().Short(), submodule), "/")
+		return version, commit.Committer.When.UTC(), nil
 	} else if submodule == "" {
 		ref, err := repo.r.Head()
 		if err != nil {
@@ -252,7 +316,8 @@ func (b *Direct) GetLatest(path, major string) (string, time.Time, error) {
 		if err != nil {
 			return "", time.Unix(0, 0), ErrNotFound
 		}
-		version = module.PseudoVersion("v0", "", commit.Committer.When.UTC(), ref.Hash().String())
+
+		version := module.PseudoVersion("v0", "", commit.Committer.When.UTC(), commit.Hash.String()[:12])
 		return version, commit.Committer.When.UTC(), nil
 	}
 
@@ -275,7 +340,17 @@ func (b *Direct) GetModule(path, version string) (string, error) {
 	repo.Lock()
 	defer repo.Unlock()
 	if repo.r == nil {
-		return "", ErrNotFound
+		return "", errors.Wrap(err, "repository was nil")
+	}
+
+	if err := repo.r.Fetch(&git.FetchOptions{
+		RemoteName: git.DefaultRemoteName,
+	}); err != nil {
+		if !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			log.Println("failed to fetch updates:", err)
+		}
+	} else {
+		log.Println("[UPDATED]", path)
 	}
 
 	rev := version
@@ -291,7 +366,8 @@ func (b *Direct) GetModule(path, version string) (string, error) {
 	hash, err := repo.r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
-			return "", ErrNotFound
+			log.Println("[MOD] no reference found for revision", rev)
+			return "", ErrOutOfDate
 		}
 		return "", errors.Wrap(err, "failed to resolve revision")
 	}
@@ -319,8 +395,14 @@ func (b *Direct) GetModule(path, version string) (string, error) {
 
 	f, err := tree.File(modFilePath)
 	if err != nil {
-		if err == object.ErrFileNotFound && major == "" && submodule == "" {
-			return "module " + path + "\n", nil
+		if err == object.ErrFileNotFound && submodule == "" {
+			if major == "" {
+				return "module " + path + "\n", nil
+			} else if major == ".v0" || major == ".v1" {
+				return "module " + path + major + "\n", nil
+			} else {
+				return "", errors.New("invalid module.... missing go.mod file")
+			}
 		}
 		return "", ErrNotFound
 	}
@@ -329,6 +411,8 @@ func (b *Direct) GetModule(path, version string) (string, error) {
 }
 
 func (b *Direct) GetInfo(path, version string) (string, time.Time, error) {
+	incompatible := strings.HasSuffix(version, "+incompatible")
+	version = strings.TrimSuffix(version, "+incompatible")
 	path, _, _ = module.SplitPathVersion(path)
 	repo, base, err := b.getRepository(path)
 	if err != nil {
@@ -342,6 +426,19 @@ func (b *Direct) GetInfo(path, version string) (string, time.Time, error) {
 		return "", time.Unix(0, 0), ErrNotFound
 	}
 
+	if err := repo.r.Fetch(&git.FetchOptions{
+		RemoteName: git.DefaultRemoteName,
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("+refs/heads/*:refs/remotes/origin/heads/*"),
+		},
+	}); err != nil {
+		if !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			log.Println("failed to fetch updates:", err)
+		}
+	} else {
+		log.Println("[UPDATED]", path)
+	}
+
 	rev := version
 	if module.IsPseudoVersion(version) {
 		rev, _ = module.PseudoVersionRev(version)
@@ -351,6 +448,9 @@ func (b *Direct) GetInfo(path, version string) (string, time.Time, error) {
 
 	hash, err := repo.r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return "", time.Unix(0, 0), ErrOutOfDate
+		}
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to resolve revision")
 	}
 
@@ -359,6 +459,9 @@ func (b *Direct) GetInfo(path, version string) (string, time.Time, error) {
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to get commit object")
 	}
 
+	if incompatible {
+		version = version + "+incompatible"
+	}
 	return version, commit.Committer.When.UTC(), nil
 }
 
@@ -379,6 +482,16 @@ func (b *Direct) GetArchive(path, version string) (io.Reader, error) {
 		return nil, ErrNotFound
 	}
 
+	if err := repo.r.Fetch(&git.FetchOptions{
+		RemoteName: git.DefaultRemoteName,
+	}); err != nil {
+		if !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			log.Println("failed to fetch updates:", err)
+		}
+	} else {
+		log.Println("[UPDATED]", path)
+	}
+
 	submodule := splitSubModule(prefix, base)
 	rev := version
 	if module.IsPseudoVersion(version) {
@@ -393,7 +506,7 @@ func (b *Direct) GetArchive(path, version string) (io.Reader, error) {
 	hash, err := repo.r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
-			return nil, ErrNotFound
+			return nil, ErrOutOfDate
 		}
 		return nil, errors.Wrap(err, "failed to resolve revision")
 	}
@@ -460,6 +573,7 @@ func (b *Direct) GetArchive(path, version string) (io.Reader, error) {
 		if strings.HasSuffix(f.Name, "go.mod") {
 			ignore = append(ignore, path2.Dir(f.Name))
 		}
+
 		return nil
 	}); err != nil {
 		return nil, errors.Wrap(err, "failed to build a list of folders to ignore")

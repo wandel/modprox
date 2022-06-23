@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -20,12 +19,7 @@ type ModuleProxy struct {
 
 func (b ModuleProxy) GetList(path, major string) ([]string, error) {
 	log.Println("list:", path, major)
-	escaped, err := module.EscapePath(path)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to escape module path '%s'", path)
-	}
-
-	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/list", escaped+major)
+	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/list", path+major)
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to query module proxy")
@@ -42,18 +36,12 @@ func (b ModuleProxy) GetList(path, major string) ([]string, error) {
 	}
 
 	data = bytes.TrimSpace(data)
-	versions := strings.Split(string(data), "\n")
-	sort.Strings(versions)
-	return versions, nil
+	return strings.Split(string(data), "\n"), nil
 }
 
 func (b ModuleProxy) GetLatest(path, major string) (string, time.Time, error) {
 	log.Println("latest:", path, major)
-	escaped, err := module.EscapePath(path)
-	if err != nil {
-		return "", time.Unix(0, 0), errors.Wrapf(err, "failed to escape module path '%s'", path)
-	}
-	url := fmt.Sprintf("https://proxy.golang.org/%s/@latest", escaped+major)
+	url := fmt.Sprintf("https://proxy.golang.org/%s/@latest", path+major)
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", time.Unix(0, 0), errors.Wrap(err, "failed to query module proxy")

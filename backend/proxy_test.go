@@ -26,6 +26,7 @@ func TestModuleProxy_GetList(t *testing.T) {
 		{"github.com/wandel/modprox_test/v3", nil},
 		{"github.com/wandel/modprox_test/subpackage", []string{"v0.1.0", "v1.0.0"}},
 		{"github.com/wandel/modprox_test/subpackage/v2", nil},
+		{"gopkg.in/cheggaaa/pb.v2", []string{"v2.0.0", "v2.0.1", "v2.0.2", "v2.0.3", "v2.0.4", "v2.0.5", "v2.0.6", "v2.0.7"}},
 	}
 
 	for _, tt := range tests {
@@ -34,12 +35,10 @@ func TestModuleProxy_GetList(t *testing.T) {
 			if !ok {
 				t.Fatalf("failed to split path: %s", tt.path)
 			}
+			log.Println("[PROXY]", prefix, major)
 
-			versions, err := b.GetList(prefix, major)
-			if tt.versions == nil {
-				if err == nil {
-					t.Fatal("expected an error")
-				} else if !errors.Is(err, backend.ErrNotFound) {
+			if versions, err := b.GetList(prefix, major); err != nil {
+				if tt.versions != nil || !errors.Is(err, backend.ErrNotFound) {
 					t.Fatal("expected a 404 not found error, got", err)
 				}
 			} else if !reflect.DeepEqual(tt.versions, versions) {
@@ -63,6 +62,7 @@ func TestModuleProxy_GetLatest(t *testing.T) {
 		{"github.com/wandel/modprox_test/v3", "", ""},
 		{"github.com/wandel/modprox_test/subpackage", "v1.0.0", "2022-05-24T12:01:26Z"},
 		{"github.com/wandel/modprox_test/subpackage/v2", "", ""},
+		{"gopkg.in/cheggaaa/pb.v2", "v2.0.7", "2019-07-02T10:37:31Z"},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +106,7 @@ func TestModuleProxy_GetModule(t *testing.T) {
 		{"github.com/wandel/modprox_test/subpackage", "v0.1.0", ""},
 		{"github.com/wandel/modprox_test/subpackage", "v1.0.0", "module github.com/wandel/modprox_test/subpackage\n\ngo 1.18"},
 		{"github.com/wandel/modprox_test/subpackage/v2", "v2.0.0", ""},
+		{"gopkg.in/cheggaaa/pb.v2", "v2.0.7", "module gopkg.in/cheggaaa/pb.v2"},
 	}
 
 	for _, tt := range tests {
@@ -137,6 +138,7 @@ func TestModuleProxy_GetInfo(t *testing.T) {
 		{"github.com/wandel/modprox_test/subpackage", "v0.1.0", ""},
 		{"github.com/wandel/modprox_test/subpackage", "v1.0.0", "2022-05-24T12:01:26Z"},
 		{"github.com/wandel/modprox_test/subpackage/v2", "", ""},
+		{"gopkg.in/cheggaaa/pb.v2", "v2.0.7", "2019-07-02T10:37:31Z"},
 	}
 
 	for _, tt := range tests {
@@ -179,7 +181,7 @@ func TestModuleProxy_GetArchive(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	if r, err := b.GetArchive("github.com/wandel/modprox_test/v2/", "v2.0.0"); err != nil {
+	if r, err := b.GetArchive("github.com/wandel/modprox_test/v2", "v2.0.0"); err != nil {
 		t.Error("got unexpected error", err)
 	} else if resp, err := http.Get("https://proxy.golang.org/github.com/wandel/modprox_test/v2/@v/v2.0.0.zip"); err != nil {
 		log.Fatalln("failed to download expected zip file")

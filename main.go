@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"golang.org/x/exp/maps"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -19,6 +22,8 @@ import (
 )
 
 var source backend.Backend
+var missing sync.Map
+var outofdate sync.Map
 
 func main() {
 	app := cli.NewApp()
@@ -34,8 +39,10 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	app.Before = func(ctx *cli.Context) error {
-		be := &backend.Direct{}
-		if err := be.Load("c:\\temp\\cache"); err != nil {
+		be := &backend.Direct{
+			CacheDir: "c:\\temp\\cache",
+		}
+		if err := be.Load(); err != nil {
 			return errors.Wrap(err, "failed to load ")
 		}
 		source = backend.NewMultiBackend(be)
@@ -44,6 +51,7 @@ func main() {
 
 	app.Action = func(ctx *cli.Context) error {
 		router := mux.NewRouter()
+		router.HandleFunc("/", StatusHandler)
 		router.HandleFunc("/{module:.+}/@v/list", ListHandler)
 		router.HandleFunc("/{module:.+}/@latest", LatestHandler)
 		router.HandleFunc("/{module:.+}/@v/{version}.mod", ModHandler)
@@ -62,6 +70,33 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		log.Fatalln("failed to run app:", err)
 	}
+}
+
+// StatusHandler provides a list missing and out of date modules
+func StatusHandler(w http.ResponseWriter, r *http.Request) {
+	output := func(x sync.Map) []string {
+		tmp := map[string]time.Time{}
+		x.Range(func(key, value any) bool {
+			tmp[key.(string)] = value.(time.Time)
+			return true
+		})
+
+		keys := maps.Keys(tmp)
+		sort.Strings(keys)
+		return keys
+	}
+
+	io.WriteString(w, "<h1>Missing:</h1><ul>")
+	for _, key := range output(missing) {
+		io.WriteString(w, "<li>"+key+"</li>")
+
+	}
+	io.WriteString(w, "</ul><h1>Out Of Date:</h1><ul>")
+	for _, key := range output(outofdate) {
+		io.WriteString(w, "<li>"+key+"</li>")
+
+	}
+	io.WriteString(w, "</ul>")
 }
 
 // ListHandler provides a list of valid versions (git tags) for a module
@@ -111,7 +146,12 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 
 	latest, timestamp, err := source.GetLatest(path, major)
 	if err != nil {
-		if errors.Is(err, backend.ErrNotFound) {
+		if errors.Is(err, backend.ErrOutOfDate) {
+			outofdate.Store(path, time.Now())
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		} else if errors.Is(err, backend.ErrNotFound) {
+			missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
@@ -147,7 +187,12 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 
 	mod, err := source.GetModule(path, version)
 	if err != nil {
-		if errors.Is(err, backend.ErrNotFound) {
+		if errors.Is(err, backend.ErrOutOfDate) {
+			outofdate.Store(path, time.Now())
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		} else if errors.Is(err, backend.ErrNotFound) {
+			missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
@@ -179,7 +224,12 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("[SERVICE-INFO]", path, version)
 	content, timestamp, err := source.GetInfo(path, version)
 	if err != nil {
-		if errors.Is(err, backend.ErrNotFound) {
+		if errors.Is(err, backend.ErrOutOfDate) {
+			outofdate.Store(path, time.Now())
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		} else if errors.Is(err, backend.ErrNotFound) {
+			missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
@@ -220,7 +270,12 @@ func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 
 	tmp, err := source.GetArchive(path, version)
 	if err != nil {
-		if errors.Is(err, backend.ErrNotFound) {
+		if errors.Is(err, backend.ErrOutOfDate) {
+			outofdate.Store(path, time.Now())
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		} else if errors.Is(err, backend.ErrNotFound) {
+			missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {

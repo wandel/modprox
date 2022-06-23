@@ -27,10 +27,7 @@ func MapPath(path string) (string, string, error) {
 		"rsc.io":                      "github.com/rsc",
 		"k8s.io":                      "github.com/kubernetes",
 		"go.etcd.io":                  "github.com/etcd-io",
-	}
-
-	if err := module.CheckPath(path); err != nil {
-		return "", "", errors.Wrap(err, "invalid path")
+		"sigs.k8s.io":                 "github.com/kubernetes-sigs",
 	}
 
 	path, major, _ := module.SplitPathVersion(path)

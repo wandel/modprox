@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"io"
+	"log"
 	"reflect"
 	"sort"
 	"strings"
@@ -14,6 +15,38 @@ import (
 	"github.com/pkg/errors"
 	"github.com/wandel/modprox/backend"
 )
+
+type testModule struct {
+	path    string
+	version string
+}
+
+func getTests() []testModule {
+	return []testModule{
+		//{"github.com/wandel/dne", "v1.0.0"},
+		//{"github.com/wandel/modprox_test", "v1.0.1"},
+		//{"github.com/wandel/modprox_test/v2", "v2.0.0"},
+		//{"github.com/wandel/modprox_test/subpackage", "v1.0.0"},
+		//{"golang.org/x/sys", "v0.0.0-20220622161953-175b2fd9d664"},
+		//{"github.com/scaleway/packer-plugin-virtualbox", "v1.0.4"},
+		//{"go.opentelemetry.io/proto/otlp", "v0.7.0"},
+		//{"gopkg.in/yaml.v3", "v3.0.1"},
+		//{"github.com/Azure/go-autorest", "v14.2.0+incompatible"},
+
+		{"gopkg.in/inf.v0", "v0.9.1"},
+		{"gopkg.in/ini.v1", "v1.66.2"},
+		{"gopkg.in/check.v1", "v1.0.0-20190902080502-41f04d3bba15"},
+		{"gopkg.in/check.v1", "v1.0.0-20180628173108-788fd7840127"},
+		{"gopkg.in/cheggaaa/pb.v1", "v1.0.27"},
+		{"gopkg.in/check.v1", "v0.0.0-20161208181325-20d25e280405"},
+		{"gopkg.in/cheggaaa/pb.v1", "v1.0.25"},
+		{"gopkg.in/check.v1", "v1.0.0-20200227125254-8fa46927fb4f"},
+		{"gopkg.in/yaml.v2", "v2.0.0-20170812160011-eb3733d160e7"},
+		{"gopkg.in/tomb.v1", "v1.0.0-20141024135613-dd632973f1e7"},
+		{"gopkg.in/alecthomas/kingpin.v2", "v2.2.6"},
+		{"gopkg.in/fsnotify.v1", "v1.4.7"},
+	}
+}
 
 func NewZipReader(r io.Reader) (*zip.Reader, error) {
 	data, err := io.ReadAll(r)
@@ -77,19 +110,7 @@ func CheckZips(r0 io.Reader, r1 io.Reader, t *testing.T) {
 }
 
 func CheckList(expected, actual backend.Backend, t *testing.T) {
-	tests := []struct {
-		path string
-	}{
-		{"github.com/wandel/dne"},
-		{"github.com/wandel/modprox_test"},
-		{"github.com/wandel/modprox_test/v2"},
-		{"github.com/wandel/modprox_test/v3"},
-		{"github.com/wandel/modprox_test/subpackage"},
-		{"github.com/wandel/modprox_test/subpackage/v2"},
-		{"gopkg.in/cheggaaa/pb.v1"},
-		//	 {"golang.org/x/sys"},
-	}
-	for _, tt := range tests {
+	for _, tt := range getTests() {
 		t.Run(tt.path, func(t *testing.T) {
 			prefix, major, ok := module.SplitPathVersion(tt.path)
 			if !ok {
@@ -104,6 +125,10 @@ func CheckList(expected, actual backend.Backend, t *testing.T) {
 				t.Errorf("expected '%s', got '%s'", err0, err1)
 			}
 
+			if len(tags0) != 0 || len(tags1) != 0 {
+				log.Println("[LIST]", tags0, len(tags0), tags1, len(tags1))
+			}
+
 			sort.Strings(tags0)
 			sort.Strings(tags1)
 			if !reflect.DeepEqual(tags0, tags1) {
@@ -114,20 +139,15 @@ func CheckList(expected, actual backend.Backend, t *testing.T) {
 }
 
 func CheckLatest(expected, actual backend.Backend, t *testing.T) {
-	tests := []struct {
-		path  string
-		major string
-	}{
-		//{"github.com/wandel/dne", ""},
-		//{"github.com/wandel/modprox_test", ""},
-		//{"github.com/wandel/modprox_test", "/v2"},
-		//{"github.com/wandel/modprox_test/subpackage", ""},
-		{"gopkg.in/cheggaaa/pb", ".v1"},
-	}
-	for _, tt := range tests {
+	for _, tt := range getTests() {
 		t.Run(tt.path, func(t *testing.T) {
-			v0, ts0, err0 := expected.GetLatest(tt.path, tt.major)
-			v1, ts1, err1 := actual.GetLatest(tt.path, tt.major)
+			prefix, major, ok := module.SplitPathVersion(tt.path)
+			if !ok {
+				t.Fatal("failed to split path", module.CheckPath(tt.path))
+			}
+
+			v0, ts0, err0 := expected.GetLatest(prefix, major)
+			v1, ts1, err1 := actual.GetLatest(prefix, major)
 
 			if errors.Is(err0, backend.ErrNotFound) && errors.Is(err1, backend.ErrNotFound) {
 			} else if err0 != err1 {
@@ -148,27 +168,7 @@ func CheckLatest(expected, actual backend.Backend, t *testing.T) {
 }
 
 func CheckModule(expected, actual backend.Backend, t *testing.T) {
-	tests := []struct {
-		path    string
-		version string
-	}{
-		//{"github.com/wandel/dne", "v1.0.0"},
-		//{"github.com/wandel/modprox_test", "v0.2.0"},
-		//{"github.com/wandel/modprox_test", "v1.0.0"},
-		//{"github.com/wandel/modprox_test/v2", "v2.0.0"},
-		//{"github.com/wandel/modprox_test/subpackage", "v0.1.0"},
-		//{"github.com/wandel/modprox_test/subpackage", "v1.0.0"},
-		//{"github.com/wandel/modprox_test/subpackage/v2", "v2.0.0"},
-		//{"golang.org/x/sys", "v0.0.0-20211216021012-1d35b9e2eb4e"},
-		//{"github.com/googleapis/gax-go/v2", "v2.1.1"},
-		//{"go.opentelemetry.io/proto/otlp", "v0.7.0"},
-		//{"gopkg.in/cheggaaa/pb.v1", "v1.0.27"},
-		//{"github.com/Microsoft/go-winio", "v0.4.16"},
-		//{"github.com/Azure/azure-sdk-for-go", "v64.0.0+incompatible"},
-		//{"github.com/hashicorp/packer-plugin-virtualbox", "v1.0.4"},
-		{"github.com/scaleway/packer-plugin-scaleway", "v1.0.4"},
-	}
-	for _, tt := range tests {
+	for _, tt := range getTests() {
 		t.Run(tt.path+"@"+tt.version, func(t *testing.T) {
 			m0, err0 := expected.GetModule(tt.path, tt.version)
 			m1, err1 := actual.GetModule(tt.path, tt.version)
@@ -186,21 +186,7 @@ func CheckModule(expected, actual backend.Backend, t *testing.T) {
 }
 
 func CheckInfo(expected, actual backend.Backend, t *testing.T) {
-	tests := []struct {
-		path    string
-		version string
-	}{
-		{"github.com/wandel/dne", "v1.0.0"},
-		{"github.com/wandel/modprox_test", "v1.0.1"},
-		{"github.com/wandel/modprox_test/v2", "v2.0.0"},
-		{"github.com/wandel/modprox_test/subpackage", "v1.0.0"},
-		{"golang.org/x/sys", "v0.0.0-20211216021012-1d35b9e2eb4e"},
-		{"github.com/googleapis/gax-go/v2", "v2.1.1"},
-		{"github.com/scaleway/packer-plugin-scaleway", "v1.0.4"},
-		{"go.opentelemetry.io/proto/otlp", "v0.7.0"},
-		{"gopkg.in/cheggaaa/pb.v1", "v1.0.27"},
-	}
-	for _, tt := range tests {
+	for _, tt := range getTests() {
 		t.Run(tt.path+"@"+tt.version, func(t *testing.T) {
 			v0, ts0, err0 := expected.GetInfo(tt.path, tt.version)
 			v1, ts1, err1 := actual.GetInfo(tt.path, tt.version)
@@ -223,22 +209,7 @@ func CheckInfo(expected, actual backend.Backend, t *testing.T) {
 }
 
 func CheckArchive(expected, actual backend.Backend, t *testing.T) {
-	tests := []struct {
-		path    string
-		version string
-	}{
-		{"github.com/wandel/dne", "v1.0.0"},
-		{"github.com/wandel/modprox_test", "v1.0.1"},
-		{"github.com/wandel/modprox_test/v2", "v2.0.0"},
-		{"github.com/wandel/modprox_test/subpackage", "v1.0.0"},
-		{"github.com/antihax/optional", "v1.0.0"},
-		{"golang.org/x/sys", "v0.0.0-20211216021012-1d35b9e2eb4e"},
-		{"github.com/googleapis/gax-go/v2", "v2.1.1"},
-		{"github.com/scaleway/packer-plugin-scaleway", "v1.0.4"},
-		{"go.opentelemetry.io/proto/otlp", "v0.7.0"},
-		{"gopkg.in/cheggaaa/pb.v1", "v1.0.27"},
-	}
-	for _, tt := range tests {
+	for _, tt := range getTests() {
 		t.Run(tt.path+"@"+tt.version, func(t *testing.T) {
 			r0, err0 := expected.GetArchive(tt.path, tt.version)
 			r1, err1 := actual.GetArchive(tt.path, tt.version)

@@ -6,7 +6,7 @@ import (
 	"github.com/wandel/modprox/backend"
 )
 
-func TestGitlab_GetList(t *testing.T) {
+func xTestGitlab_GetList(t *testing.T) {
 	expected := backend.ModuleProxy{}
 	actual, err := backend.NewGitLab("", "mirror8")
 	if err != nil {
@@ -16,7 +16,7 @@ func TestGitlab_GetList(t *testing.T) {
 	CheckList(expected, actual, t)
 }
 
-func TestGitlab_GetLatest(t *testing.T) {
+func xTestGitlab_GetLatest(t *testing.T) {
 	expected := backend.ModuleProxy{}
 	actual, err := backend.NewGitLab("", "mirror8")
 	if err != nil {
@@ -26,7 +26,7 @@ func TestGitlab_GetLatest(t *testing.T) {
 	CheckLatest(expected, actual, t)
 }
 
-func TestGitlab_GetModule(t *testing.T) {
+func xTestGitlab_GetModule(t *testing.T) {
 	expected := backend.ModuleProxy{}
 	actual, err := backend.NewGitLab("", "mirror8")
 	if err != nil {
@@ -36,7 +36,7 @@ func TestGitlab_GetModule(t *testing.T) {
 	CheckModule(expected, actual, t)
 }
 
-func TestGitlab_GetInfo(t *testing.T) {
+func xTestGitlab_GetInfo(t *testing.T) {
 	expected := backend.ModuleProxy{}
 	actual, err := backend.NewGitLab("", "mirror8")
 	if err != nil {
@@ -46,7 +46,7 @@ func TestGitlab_GetInfo(t *testing.T) {
 	CheckInfo(expected, actual, t)
 }
 
-func TestGitlab_GetArchive(t *testing.T) {
+func xTestGitlab_GetArchive(t *testing.T) {
 	expected := backend.ModuleProxy{}
 	actual, err := backend.NewGitLab("", "mirror8")
 	if err != nil {
