@@ -3,6 +3,7 @@ package backend
 import (
 	"errors"
 	"io"
+	"log"
 	"time"
 
 	"golang.org/x/exp/maps"
@@ -83,6 +84,7 @@ func (mb MultiBackend) GetModule(path, version string) (string, error) {
 		} else if errors.Is(err, ErrOutOfDate) {
 			outofdate = true
 		}
+		log.Println(err)
 	}
 
 	if outofdate {

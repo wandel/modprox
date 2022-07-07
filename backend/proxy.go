@@ -36,7 +36,12 @@ func (b ModuleProxy) GetList(path, major string) ([]string, error) {
 	}
 
 	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, nil
+	}
+
 	return strings.Split(string(data), "\n"), nil
+
 }
 
 func (b ModuleProxy) GetLatest(path, major string) (string, time.Time, error) {
@@ -85,7 +90,6 @@ func (b ModuleProxy) GetModule(path, version string) (string, error) {
 		return "", errors.Wrap(err, "failed to read body of response")
 	}
 
-	data = bytes.TrimSpace(data)
 	return string(data), nil
 }
 

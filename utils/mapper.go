@@ -7,6 +7,11 @@ import (
 )
 
 func MapPath(path string) (string, string, error) {
+	// some github repos have been moved, so we need to fix that.
+	fixes := map[string]string{
+		"github.com/go-fsnotify/fsnotify": "github.com/fsnotify/fsnotify",
+	}
+
 	// not sure if this is required...
 	mappings := map[string]string{
 		"google.golang.org/grpc":      "github.com/grpc/grpc-go",
@@ -50,6 +55,12 @@ func MapPath(path string) (string, string, error) {
 			if strings.HasPrefix(path, key) {
 				path = strings.Replace(path, key, value, 1)
 			}
+		}
+	}
+
+	for key, value := range fixes {
+		if strings.HasPrefix(path, key) {
+			path = strings.Replace(path, key, value, 1)
 		}
 	}
 

@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"io"
-	"log"
 	"reflect"
 	"sort"
 	"strings"
@@ -21,30 +20,49 @@ type testModule struct {
 	version string
 }
 
+var expected backend.ModuleProxy
+
 func getTests() []testModule {
 	return []testModule{
+		//// does not exist
 		//{"github.com/wandel/dne", "v1.0.0"},
-		//{"github.com/wandel/modprox_test", "v1.0.1"},
-		//{"github.com/wandel/modprox_test/v2", "v2.0.0"},
-		//{"github.com/wandel/modprox_test/subpackage", "v1.0.0"},
+		//// no major version
+		//{"github.com/wandel/modprox-test", "v1.0.1"},
+		//// major version > 1
+		//{"github.com/wandel/modprox-test/v2", "v2.0.0"},
+		//// module in a subdirectory
+		//{"github.com/wandel/modprox-test/subpackage", "v1.0.0"},
+		//// module in a subdirectory does not exist
+		//{"github.com/wandel/modprox-test/subpackage/v2", "v2.0.0"},
+		//// gopkg.in support
+		//{"gopkg.in/wandel/modprox-test.v0", "v0.2.0"},
+		//// there is no mod file in v1.0.0, so this will fail
+		////{"gopkg.in/wandel/modprox-test.v1", "v1.0.0"},
+		//{"gopkg.in/wandel/modprox-test.v2", "v2.0.0"},
+		//// no major tags
 		//{"golang.org/x/sys", "v0.0.0-20220622161953-175b2fd9d664"},
-		//{"github.com/scaleway/packer-plugin-virtualbox", "v1.0.4"},
-		//{"go.opentelemetry.io/proto/otlp", "v0.7.0"},
-		//{"gopkg.in/yaml.v3", "v3.0.1"},
+		//// +incompatible version
 		//{"github.com/Azure/go-autorest", "v14.2.0+incompatible"},
+		//{"github.com/fsnotify/fsnotify", "v1.5.4"},
+		//{"github.com/hashicorp/packer-plugin-vsphere", "v1.0.5"},
+		//{"github.com/scaleway/packer-plugin-scaleway", "v1.0.4"},
+		//{"cloud.google.com/go/storage", "v1.18.2"},
+		//{"github.com/Azure/go-autorest/autorest", "v0.11.19"},
+		//{"github.com/Azure/go-autorest/logger", "v0.2.1"},
+		{"github.com/Azure/go-autorest/tracing", "v0.6.0"},
+		//{"github.com/aliyun/alibaba-cloud-sdk-go", "v1.61.1028"},
+		//{"github.com/hashicorp/consul/api", "v1.10.1"},
+		//{"github.com/hashicorp/go-oracle-terraform", "v0.17.0"},
+		//{"github.com/hashicorp/serf", "v0.9.5"},
+		//{"github.com/joyent/triton-go", "v1.8.5"},
+		//{"github.com/mailru/easyjson", "v0.7.6"},
+		//{"github.com/ucloud/ucloud-sdk-go", "v0.20.2"},
+		//{"go.mongodb.org/mongo-driver", "v1.5.1"},
 
-		{"gopkg.in/inf.v0", "v0.9.1"},
-		{"gopkg.in/ini.v1", "v1.66.2"},
-		{"gopkg.in/check.v1", "v1.0.0-20190902080502-41f04d3bba15"},
-		{"gopkg.in/check.v1", "v1.0.0-20180628173108-788fd7840127"},
-		{"gopkg.in/cheggaaa/pb.v1", "v1.0.27"},
-		{"gopkg.in/check.v1", "v0.0.0-20161208181325-20d25e280405"},
-		{"gopkg.in/cheggaaa/pb.v1", "v1.0.25"},
-		{"gopkg.in/check.v1", "v1.0.0-20200227125254-8fa46927fb4f"},
-		{"gopkg.in/yaml.v2", "v2.0.0-20170812160011-eb3733d160e7"},
-		{"gopkg.in/tomb.v1", "v1.0.0-20141024135613-dd632973f1e7"},
-		{"gopkg.in/alecthomas/kingpin.v2", "v2.2.6"},
-		{"gopkg.in/fsnotify.v1", "v1.4.7"},
+		// this has beta versions that have no tag present in vcs... maybe deleted?
+		//{"github.com/hashicorp/vault/api", "v1.1.1"},
+		//{"github.com/ugorji/go/codec", "v1.2.6"},
+		//{"github.com/kevinburke/ssh_config", "v0.0.0-20201106050909-4977a11b4351"},
 	}
 }
 
@@ -121,18 +139,15 @@ func CheckList(expected, actual backend.Backend, t *testing.T) {
 			tags1, err1 := actual.GetList(prefix, major)
 
 			if errors.Is(err0, backend.ErrNotFound) && errors.Is(err1, backend.ErrNotFound) {
+				return
 			} else if err0 != err1 {
 				t.Errorf("expected '%s', got '%s'", err0, err1)
-			}
-
-			if len(tags0) != 0 || len(tags1) != 0 {
-				log.Println("[LIST]", tags0, len(tags0), tags1, len(tags1))
 			}
 
 			sort.Strings(tags0)
 			sort.Strings(tags1)
 			if !reflect.DeepEqual(tags0, tags1) {
-				t.Errorf("expected '%s', got '%s'", tags0, tags1)
+				t.Errorf("expected '%+v', got '%+v'", tags0, tags1)
 			}
 		})
 	}
@@ -191,18 +206,19 @@ func CheckInfo(expected, actual backend.Backend, t *testing.T) {
 			v0, ts0, err0 := expected.GetInfo(tt.path, tt.version)
 			v1, ts1, err1 := actual.GetInfo(tt.path, tt.version)
 
-			if errors.Is(err0, backend.ErrNotFound) && errors.Is(err1, backend.ErrNotFound) {
-			} else if err0 != err1 {
-				t.Errorf("expected '%s', got '%s'", err0, err1)
-			}
+			if err0 != nil || err1 != nil {
+				if !errors.Is(err0, backend.ErrNotFound) || !errors.Is(err1, backend.ErrNotFound) {
+					t.Fatalf("expected '%s', got '%s'", err0, err1)
+				}
+			} else {
+				if v0 != v1 {
+					t.Errorf("expected version '%s', got '%s'", v0, v1)
 
-			if v0 != v1 {
-				t.Errorf("expected version '%s', got '%s'", v0, v1)
+				}
 
-			}
-
-			if ts0 != ts1 {
-				t.Errorf("expected timestamp '%s', got '%s'", ts0, ts1)
+				if ts0 != ts1 {
+					t.Errorf("expected timestamp '%s', got '%s'", ts0, ts1)
+				}
 			}
 		})
 	}

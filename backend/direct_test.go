@@ -1,58 +1,30 @@
 package backend_test
 
 import (
-	"github.com/wandel/modprox/backend"
-	"io/ioutil"
-	"os"
 	"testing"
+
+	"github.com/wandel/modprox/backend"
 )
 
-var actual backend.Direct
-var expected backend.ModuleProxy
-
 func init() {
-	actual.CacheDir = "C:\\temp\\cache"
-	actual.Load()
 }
 
 func TestDirect_GetList(t *testing.T) {
-	CheckList(&expected, &actual, t)
+	CheckList(&expected, &backend.Direct{}, t)
 }
 
 func TestDirect_GetLatest(t *testing.T) {
-	CheckLatest(&expected, &actual, t)
+	CheckLatest(&expected, &backend.Direct{}, t)
 }
 
 func TestDirect_GetModule(t *testing.T) {
-	CheckModule(&expected, &actual, t)
+	CheckModule(&expected, &backend.Direct{}, t)
 }
 
 func TestDirect_GetInfo(t *testing.T) {
-	CheckInfo(&expected, &actual, t)
+	CheckInfo(&expected, &backend.Direct{}, t)
 }
 
 func TestDirect_GetArchive(t *testing.T) {
-	CheckArchive(&expected, &actual, t)
-}
-
-func TestDirect_RepoCache(t *testing.T) {
-	direct := &backend.Direct{}
-	if path, err := ioutil.TempDir("", "modprox-direct-test-*"); err != nil {
-		t.Fatal("failed to create temp cache directory", err)
-	} else {
-		defer os.RemoveAll(path)
-		direct.CacheDir = path
-	}
-
-	if _, err := direct.GetModule("github.com/wandel/modprox_test", "v1.0.0"); err != nil {
-		t.Errorf("v1 should have worked: %v\n", err)
-	}
-
-	if _, err := direct.GetModule("github.com/wandel/modprox_test/v2", "v2.0.0"); err != nil {
-		t.Errorf("v2 should have worked: %v\n", err)
-	}
-
-	if _, err := direct.GetModule("github.com/wandel/modprox_test/subpackage", "v1.0.0"); err != nil {
-		t.Errorf("subpackage should have worked: %v\n", err)
-	}
+	CheckArchive(&expected, &backend.Direct{}, t)
 }

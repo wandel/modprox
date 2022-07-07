@@ -21,46 +21,42 @@ import (
 	"golang.org/x/mod/module"
 )
 
-var source backend.Backend
-var missing sync.Map
-var outofdate sync.Map
-
 func main() {
 	app := cli.NewApp()
 	app.Name = "ModProx"
 	app.Usage = "Golang Module Proxy"
 	app.Flags = []cli.Flag{
 		&cli.StringFlag{Name: "address", Value: "127.0.0.1:8000", Usage: "the address to listen on"},
-		&cli.StringFlag{Name: "username", Value: "git", Usage: "the username to use"},
-		&cli.StringFlag{Name: "password", Value: "", Usage: "the password to use"},
-		&cli.StringFlag{Name: "privatekey", Value: "", Usage: "the ssh private key to use"},
-		cli.StringFlag{Name: "token", Value: "", Usage: "gitlab personal access token"},
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	app.Before = func(ctx *cli.Context) error {
-		be := &backend.Direct{
-			CacheDir: "c:\\temp\\cache",
-		}
-		if err := be.Load(); err != nil {
-			return errors.Wrap(err, "failed to load ")
-		}
-		source = backend.NewMultiBackend(be)
-		return nil
-	}
 
 	app.Action = func(ctx *cli.Context) error {
-		router := mux.NewRouter()
-		router.HandleFunc("/", StatusHandler)
-		router.HandleFunc("/{module:.+}/@v/list", ListHandler)
-		router.HandleFunc("/{module:.+}/@latest", LatestHandler)
-		router.HandleFunc("/{module:.+}/@v/{version}.mod", ModHandler)
-		router.HandleFunc("/{module:.+}/@v/{version}.info", InfoHandler)
-		router.HandleFunc("/{module:.+}/@v/{version}.zip", ArchiveHandler)
+		//be := &backend.Git{
+		//	CacheDir: "c:\\temp\\cache",
+		//}
+		//if err := be.Load(); err != nil {
+		//	return errors.Wrap(err, "failed to load ")
+		//}
+
+		source := backend.NewMultiBackend(
+			&backend.Direct{
+				Environ: []string{
+					"GOPROXY=direct",
+					"GOPATH=c:/temp",
+				},
+			},
+			//&backend.ModuleProxy{},
+		)
+
+		handler, err := NewHandler(source)
+		if err != nil {
+			return errors.Wrap(err, "failed to create modprox handler")
+		}
 
 		address := ctx.GlobalString("address")
 		log.Println("listening on", address)
-		if err := http.ListenAndServe(address, router); err != nil {
+		if err := http.ListenAndServe(address, handler); err != nil {
 			return err
 		}
 
@@ -72,8 +68,39 @@ func main() {
 	}
 }
 
-// StatusHandler provides a list missing and out of date modules
-func StatusHandler(w http.ResponseWriter, r *http.Request) {
+func NewHandler(source backend.Backend) (http.Handler, error) {
+	if source == nil {
+		return nil, errors.New("source must not be nil")
+	}
+
+	h := Handler{
+		source: source,
+	}
+
+	h.router = mux.NewRouter()
+	h.router.HandleFunc("/", h.HandleStatus)
+	h.router.HandleFunc("/{module:.+}/@v/list", h.HandleList)
+	h.router.HandleFunc("/{module:.+}/@latest", h.HandleLatest)
+	h.router.HandleFunc("/{module:.+}/@v/{version}.mod", h.HandleMod)
+	h.router.HandleFunc("/{module:.+}/@v/{version}.info", h.HandleInfo)
+	h.router.HandleFunc("/{module:.+}/@v/{version}.zip", h.HandleArchive)
+
+	return &h, nil
+}
+
+type Handler struct {
+	router *mux.Router
+	source backend.Backend
+
+	missing   sync.Map
+	outofdate sync.Map
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.router.ServeHTTP(w, r)
+}
+
+func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	output := func(x sync.Map) []string {
 		tmp := map[string]time.Time{}
 		x.Range(func(key, value any) bool {
@@ -87,20 +114,21 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	io.WriteString(w, "<h1>Missing:</h1><ul>")
-	for _, key := range output(missing) {
+	for _, key := range output(h.missing) {
 		io.WriteString(w, "<li>"+key+"</li>")
 
 	}
 	io.WriteString(w, "</ul><h1>Out Of Date:</h1><ul>")
-	for _, key := range output(outofdate) {
+	for _, key := range output(h.outofdate) {
 		io.WriteString(w, "<li>"+key+"</li>")
 
 	}
 	io.WriteString(w, "</ul>")
+
 }
 
-// ListHandler provides a list of valid versions (git tags) for a module
-func ListHandler(w http.ResponseWriter, r *http.Request) {
+// HandleList provides a list of valid versions (git tags) for a module
+func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
 
 	// validate the path first
@@ -114,9 +142,10 @@ func ListHandler(w http.ResponseWriter, r *http.Request) {
 	prefix, major, _ := module.SplitPathVersion(path)
 
 	// Check for modules
-	if versions, err := source.GetList(prefix, major); err != nil {
+	if versions, err := h.source.GetList(prefix, major); err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
 			// Do not sync on 404, as go get send a request for each part in the path.
+			h.missing.Store(path, time.Now())
 			http.Error(w, "not found", http.StatusNotFound)
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -128,7 +157,7 @@ func ListHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func LatestHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
 	// if 404, then add module to the "missing" list
 
@@ -144,20 +173,23 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	latest, timestamp, err := source.GetLatest(path, major)
+	latest, timestamp, err := h.source.GetLatest(path, major)
 	if err != nil {
 		if errors.Is(err, backend.ErrOutOfDate) {
-			outofdate.Store(path, time.Now())
+			h.outofdate.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else if errors.Is(err, backend.ErrNotFound) {
-			missing.Store(path, time.Now())
+			h.missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	} else {
+		h.outofdate.Delete(path)
+		h.missing.Delete(path)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -171,7 +203,7 @@ func LatestHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func ModHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleMod(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
 	path, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
@@ -185,20 +217,23 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mod, err := source.GetModule(path, version)
+	mod, err := h.source.GetModule(path, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrOutOfDate) {
-			outofdate.Store(path, time.Now())
+			h.outofdate.Store(path+"@"+version, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else if errors.Is(err, backend.ErrNotFound) {
-			missing.Store(path, time.Now())
+			h.missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	} else {
+		h.outofdate.Delete(path + "@" + version)
+		h.missing.Delete(path)
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
@@ -207,7 +242,7 @@ func ModHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func InfoHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleInfo(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
 	path, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
@@ -221,21 +256,23 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("[SERVICE-INFO]", path, version)
-	content, timestamp, err := source.GetInfo(path, version)
+	content, timestamp, err := h.source.GetInfo(path, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrOutOfDate) {
-			outofdate.Store(path, time.Now())
+			h.outofdate.Store(path+"@"+version, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else if errors.Is(err, backend.ErrNotFound) {
-			missing.Store(path, time.Now())
+			h.missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	} else {
+		h.outofdate.Delete(path + "@" + version)
+		h.missing.Delete(path)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -254,7 +291,7 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleArchive(w http.ResponseWriter, r *http.Request) {
 	log.Println(r.URL)
 	path, err := module.UnescapePath(mux.Vars(r)["module"])
 	if err != nil {
@@ -268,20 +305,23 @@ func ArchiveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmp, err := source.GetArchive(path, version)
+	tmp, err := h.source.GetArchive(path, version)
 	if err != nil {
 		if errors.Is(err, backend.ErrOutOfDate) {
-			outofdate.Store(path, time.Now())
+			h.outofdate.Store(path+"@"+version, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else if errors.Is(err, backend.ErrNotFound) {
-			missing.Store(path, time.Now())
+			h.missing.Store(path, time.Now())
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	} else {
+		h.outofdate.Delete(path + "@" + version)
+		h.missing.Delete(path)
 	}
 
 	w.Header().Set("content-type", "application/zip")
